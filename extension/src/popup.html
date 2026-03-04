@@ -10,34 +10,16 @@
     <main class="popup">
       <header class="popup-header">
         <h1>Twitch Watch Guard</h1>
-        <p>Wichtige Channels kompakt verwalten.</p>
+        <label class="watch-toggle" aria-label="Watch Group aktivieren">
+          <input id="watch-toggle" type="checkbox">
+          <span class="watch-toggle-slider" aria-hidden="true"></span>
+        </label>
       </header>
-
-      <section class="panel">
-        <label class="row toggle-row">
-          <span>Auto-Manage Watch Tabs</span>
-          <input id="auto-manage" type="checkbox">
-        </label>
-
-        <label class="row">
-          <span>Max parallel Streams</span>
-          <select id="max-streams">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-          </select>
-        </label>
-      </section>
 
       <section class="panel">
         <div class="section-title">Wichtige Channels</div>
         <ul id="channel-list" class="channel-list"></ul>
         <p id="empty-state" class="empty-state">Noch keine Channels markiert.</p>
-      </section>
-
-      <section class="actions">
-        <button id="start-button" type="button">Open Watch Group</button>
-        <button id="stop-button" type="button" class="secondary">Stop &amp; Close</button>
       </section>
 
       <section class="panel">

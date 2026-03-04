@@ -28,7 +28,7 @@ export async function selectLiveChannels(channels, maxStreams) {
       break;
     }
 
-    if (await isChannelLive(channel)) {
+    if ((await getChannelLiveStatus(channel)) === "live") {
       liveChannels.push(channel);
     }
   }
@@ -36,7 +36,20 @@ export async function selectLiveChannels(channels, maxStreams) {
   return liveChannels;
 }
 
-async function isChannelLive(channel) {
+export async function getChannelsLiveStatus(channels) {
+  const targetChannels = [...new Set((Array.isArray(channels) ? channels : [])
+    .map((channel) => String(channel || "").toLowerCase())
+    .filter(Boolean))];
+  const statusByChannel = {};
+
+  for (const channel of targetChannels) {
+    statusByChannel[channel] = await getChannelLiveStatus(channel);
+  }
+
+  return statusByChannel;
+}
+
+async function getChannelLiveStatus(channel) {
   try {
     const response = await fetch(TWITCH_GQL_ENDPOINT, {
       method: "POST",
@@ -58,13 +71,13 @@ async function isChannelLive(channel) {
     }
 
     const payload = await response.json();
-    return Boolean(payload?.data?.user?.stream?.id);
+    return payload?.data?.user?.stream?.id ? "live" : "offline";
   } catch (error) {
     console.warn(
-      "TW Watch Guard: live status unavailable; channel remains closed.",
+      "TW Watch Guard: live status unavailable.",
       channel,
       error
     );
-    return false;
+    return "unknown";
   }
 }

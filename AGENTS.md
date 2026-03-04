@@ -19,6 +19,7 @@ Diese Datei definiert verbindliche Arbeitsregeln fuer dieses Repository.
 - Wichtige Entscheidungen muessen in diesem Memory-Projekt dokumentiert werden.
 - Reale Fortschritte muessen in diesem Memory-Projekt dokumentiert werden.
 - Vor groesseren Richtungsentscheidungen ist der relevante Memory-Kontext zu pruefen.
+- Memory-Hygiene erfolgt nur anlassbezogen bei Meilensteinen oder realer Unuebersicht; doppelte oder ueberholte Eintraege werden bei Bedarf zusammengefuehrt oder klar als ersetzt markiert.
 
 ## Dokumentationsstandard
 - Dokumentiert werden nur Dinge mit echtem Projektwert:

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Twitch Watch Guard",
-  "version": "0.1.7",
+  "version": "0.2.5",
   "description": "Manage important Twitch watch tabs without tab chaos.",
   "permissions": [
     "storage",

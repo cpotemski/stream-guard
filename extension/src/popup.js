@@ -1,9 +1,8 @@
-const autoManageInput = document.getElementById("auto-manage");
-const maxStreamsInput = document.getElementById("max-streams");
+import { getChannelsLiveStatus } from "./lib/liveStatus.js";
+
 const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
-const startButton = document.getElementById("start-button");
-const stopButton = document.getElementById("stop-button");
+const watchToggle = document.getElementById("watch-toggle");
 const debugOutput = document.getElementById("debug-output");
 
 void init();
@@ -14,33 +13,10 @@ async function init() {
 }
 
 function bindEvents() {
-  autoManageInput.addEventListener("change", async () => {
+  watchToggle.addEventListener("change", async () => {
     await chrome.runtime.sendMessage({
-      type: "settings:update",
-      settings: {
-        autoManage: autoManageInput.checked
-      }
+      type: watchToggle.checked ? "watch:start" : "watch:stop"
     });
-    await refresh();
-  });
-
-  maxStreamsInput.addEventListener("change", async () => {
-    await chrome.runtime.sendMessage({
-      type: "settings:update",
-      settings: {
-        maxStreams: Number(maxStreamsInput.value)
-      }
-    });
-    await refresh();
-  });
-
-  startButton.addEventListener("click", async () => {
-    await chrome.runtime.sendMessage({ type: "watch:start" });
-    await refresh();
-  });
-
-  stopButton.addEventListener("click", async () => {
-    await chrome.runtime.sendMessage({ type: "watch:stop" });
     await refresh();
   });
 }
@@ -51,12 +27,15 @@ async function refresh() {
     return;
   }
 
-  render(response.settings, response.runtimeState, response.debugLog);
+  const liveStatusByChannel = await getChannelsLiveStatus(
+    response.settings.importantChannels.map((entry) => entry.name)
+  );
+
+  render(response.settings, response.runtimeState, response.debugLog, liveStatusByChannel);
 }
 
-function render(settings, runtimeState, debugLog) {
-  autoManageInput.checked = settings.autoManage;
-  maxStreamsInput.value = String(settings.maxStreams);
+function render(settings, runtimeState, debugLog, liveStatusByChannel) {
+  watchToggle.checked = settings.autoManage;
 
   channelList.textContent = "";
   const hasChannels = settings.importantChannels.length > 0;
@@ -66,8 +45,18 @@ function render(settings, runtimeState, debugLog) {
     const item = document.createElement("li");
     item.className = "channel-item";
 
-    const label = document.createElement("span");
-    label.textContent = `${index + 1}. ${entry.name}`;
+    const label = document.createElement("div");
+    label.className = "channel-label";
+
+    const status = document.createElement("span");
+    status.className = "channel-status";
+    status.textContent = getChannelIndicator(liveStatusByChannel[entry.name]);
+
+    const name = document.createElement("span");
+    name.textContent = `${index + 1}. ${entry.name}`;
+
+    label.appendChild(status);
+    label.appendChild(name);
 
     const controls = document.createElement("div");
     controls.className = "channel-controls";
@@ -91,9 +80,21 @@ function render(settings, runtimeState, debugLog) {
   renderDebug(runtimeState, debugLog);
 }
 
+function getChannelIndicator(status) {
+  switch (status) {
+    case "live":
+      return "🔴";
+    case "offline":
+      return "⚪️";
+    default:
+      return "❔";
+  }
+}
+
 function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
   const button = document.createElement("button");
   button.type = "button";
+  button.className = "move-button";
   button.textContent = text;
   button.disabled = !enabled;
 
