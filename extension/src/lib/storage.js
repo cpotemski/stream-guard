@@ -8,7 +8,8 @@ export const DEFAULT_SETTINGS = {
 export const DEFAULT_RUNTIME_STATE = {
   managedTabs: [],
   managedTabsByChannel: {},
-  detachedChannels: []
+  detachedChannels: [],
+  watchSessionsByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -59,11 +60,13 @@ export async function getRuntimeState() {
   const managedTabs = Array.isArray(stored.managedTabs) ? stored.managedTabs : [];
   const managedTabsByChannel = normalizeManagedTabsByChannel(stored.managedTabsByChannel);
   const detachedChannels = normalizeChannelList(stored.detachedChannels);
+  const watchSessionsByChannel = normalizeWatchSessionsByChannel(stored.watchSessionsByChannel);
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
     managedTabsByChannel,
-    detachedChannels
+    detachedChannels,
+    watchSessionsByChannel
   };
 }
 
@@ -87,6 +90,10 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.detachedChannels !== undefined) {
     next.detachedChannels = normalizeChannelList(partialState.detachedChannels);
+  }
+
+  if (partialState.watchSessionsByChannel !== undefined) {
+    next.watchSessionsByChannel = normalizeWatchSessionsByChannel(partialState.watchSessionsByChannel);
   }
 
   await chrome.storage.local.set(next);
@@ -156,4 +163,27 @@ function normalizeChannelList(value) {
   return [...new Set((Array.isArray(value) ? value : [])
     .map((channel) => String(channel || "").toLowerCase())
     .filter(Boolean))];
+}
+
+function normalizeWatchSessionsByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, session]) => [
+        String(channel || "").toLowerCase(),
+        normalizeWatchSession(session)
+      ])
+      .filter(([channel, session]) => channel && session)
+  );
+}
+
+function normalizeWatchSession(value) {
+  const startedAt = Math.round(Number(value?.startedAt));
+
+  if (!Number.isFinite(startedAt) || startedAt <= 0) {
+    return null;
+  }
+
+  return { startedAt };
 }

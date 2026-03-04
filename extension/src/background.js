@@ -96,7 +96,11 @@ async function handleMessage(message) {
       const closedTabs = await closeManagedWatchTabs(
         Object.values(runtimeState.managedTabsByChannel)
       );
-      await setRuntimeState({ managedTabsByChannel: {}, detachedChannels: [] });
+      await setRuntimeState({
+        managedTabsByChannel: {},
+        detachedChannels: [],
+        watchSessionsByChannel: {}
+      });
       const settings = await setSettings({ autoManage: false });
       await syncAlarm(false);
       await updateBadge(settings);
@@ -124,6 +128,7 @@ async function reconcileManagedTabs(settings) {
   const desiredChannels = new Set(liveChannels);
   const nextManagedTabsByChannel = { ...runtimeState.managedTabsByChannel };
   const nextDetachedChannels = new Set(runtimeState.detachedChannels);
+  const nextWatchSessionsByChannel = { ...runtimeState.watchSessionsByChannel };
 
   await appendDebugLog("reconcile:start", {
     prioritizedChannels,
@@ -149,6 +154,7 @@ async function reconcileManagedTabs(settings) {
       });
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
+      delete nextWatchSessionsByChannel[channel];
       nextDetachedChannels.delete(channel);
       continue;
     }
@@ -160,6 +166,7 @@ async function reconcileManagedTabs(settings) {
         tabId
       });
       delete nextManagedTabsByChannel[channel];
+      delete nextWatchSessionsByChannel[channel];
       continue;
     }
 
@@ -184,7 +191,15 @@ async function reconcileManagedTabs(settings) {
       });
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
+      delete nextWatchSessionsByChannel[channel];
       nextDetachedChannels.add(channel);
+      continue;
+    }
+
+    if (!nextWatchSessionsByChannel[channel]) {
+      nextWatchSessionsByChannel[channel] = {
+        startedAt: Date.now()
+      };
     }
   }
 
@@ -201,6 +216,9 @@ async function reconcileManagedTabs(settings) {
     const tabId = await openWatchTab(channel);
     if (Number.isInteger(tabId)) {
       nextManagedTabsByChannel[channel] = tabId;
+      nextWatchSessionsByChannel[channel] = {
+        startedAt: Date.now()
+      };
       await appendDebugLog("reconcile:open-tab", {
         channel,
         tabId
@@ -214,13 +232,21 @@ async function reconcileManagedTabs(settings) {
     }
   }
 
+  for (const channel of Object.keys(nextWatchSessionsByChannel)) {
+    if (!nextManagedTabsByChannel[channel]) {
+      delete nextWatchSessionsByChannel[channel];
+    }
+  }
+
   await setRuntimeState({
     managedTabsByChannel: nextManagedTabsByChannel,
-    detachedChannels: [...nextDetachedChannels]
+    detachedChannels: [...nextDetachedChannels],
+    watchSessionsByChannel: nextWatchSessionsByChannel
   });
   await appendDebugLog("reconcile:done", {
     managedTabsByChannel: nextManagedTabsByChannel,
-    detachedChannels: [...nextDetachedChannels]
+    detachedChannels: [...nextDetachedChannels],
+    watchSessionsByChannel: nextWatchSessionsByChannel
   });
   return nextManagedTabsByChannel;
 }
@@ -284,7 +310,8 @@ async function resetManagedWatchState() {
   await setRuntimeState({
     managedTabs: [],
     managedTabsByChannel: {},
-    detachedChannels: []
+    detachedChannels: [],
+    watchSessionsByChannel: {}
   });
   await appendDebugLog("reset:done", {});
 }

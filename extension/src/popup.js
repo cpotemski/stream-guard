@@ -5,10 +5,15 @@ const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
 const debugOutput = document.getElementById("debug-output");
 
+let latestSnapshot = null;
+
 void init();
 
 async function init() {
   bindEvents();
+  window.setInterval(() => {
+    renderCurrent();
+  }, 1000);
   await refresh();
 }
 
@@ -31,7 +36,27 @@ async function refresh() {
     response.settings.importantChannels.map((entry) => entry.name)
   );
 
-  render(response.settings, response.runtimeState, response.debugLog, liveStatusByChannel);
+  latestSnapshot = {
+    settings: response.settings,
+    runtimeState: response.runtimeState,
+    debugLog: response.debugLog,
+    liveStatusByChannel
+  };
+
+  renderCurrent();
+}
+
+function renderCurrent() {
+  if (!latestSnapshot) {
+    return;
+  }
+
+  render(
+    latestSnapshot.settings,
+    latestSnapshot.runtimeState,
+    latestSnapshot.debugLog,
+    latestSnapshot.liveStatusByChannel
+  );
 }
 
 function render(settings, runtimeState, debugLog, liveStatusByChannel) {
@@ -57,6 +82,14 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
 
     label.appendChild(status);
     label.appendChild(name);
+
+    const watchtime = formatWatchtime(runtimeState.watchSessionsByChannel?.[entry.name]);
+    if (watchtime) {
+      const watchtimeLabel = document.createElement("span");
+      watchtimeLabel.className = "channel-watchtime";
+      watchtimeLabel.textContent = watchtime;
+      label.appendChild(watchtimeLabel);
+    }
 
     const controls = document.createElement("div");
     controls.className = "channel-controls";
@@ -115,6 +148,24 @@ function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
   }
 
   return button;
+}
+
+function formatWatchtime(session) {
+  const startedAt = Number(session?.startedAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) {
+    return "";
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - startedAt);
+  const totalMinutes = Math.floor(elapsedMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+
+  return `${minutes}m`;
 }
 
 function renderDebug(runtimeState, debugLog) {
