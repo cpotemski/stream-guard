@@ -8,19 +8,21 @@ const UPTIME_SELECTOR_CANDIDATES = [
   ".live-time"
 ];
 const CLAIM_BUTTON_SELECTOR_CANDIDATES = [
-  "[data-test-selector='community-points-summary'] [class*='claimable-bonus'] button",
-  "[data-test-selector='community-points-summary'] button",
-  "button[data-test-selector='community-points-summary']"
+  "[data-test-selector='community-points-summary'] [class*='claimable-bonus'] button"
 ];
 const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
+const MIN_WATCH_VOLUME = 0.01;
+const INTERACTION_EVENTS = ["pointerdown", "keydown", "touchstart", "mousedown"];
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;
 let lastClaimAvailabilityKey = null;
+let hasDocumentInteraction = false;
 
 void init();
 
 async function init() {
+  bindInteractionTracking();
   await syncButton();
   window.setInterval(() => {
     void syncButton();
@@ -31,6 +33,22 @@ async function init() {
   window.setInterval(() => {
     void tryAutoClaimBonus();
   }, 5000);
+  window.setInterval(() => {
+    void ensureManagedPlaybackState();
+  }, 5000);
+}
+
+function bindInteractionTracking() {
+  for (const eventName of INTERACTION_EVENTS) {
+    window.addEventListener(eventName, markDocumentInteraction, {
+      capture: true,
+      passive: true
+    });
+  }
+}
+
+function markDocumentInteraction() {
+  hasDocumentInteraction = true;
 }
 
 async function syncButton() {
@@ -39,6 +57,7 @@ async function syncButton() {
     placeButton();
     void reportWatchUptime();
     void tryAutoClaimBonus();
+    void ensureManagedPlaybackState();
     return;
   }
 
@@ -54,6 +73,7 @@ async function syncButton() {
   await injectButton(channel);
   void reportWatchUptime();
   void tryAutoClaimBonus();
+  void ensureManagedPlaybackState();
 }
 
 async function injectButton(channel) {
@@ -227,6 +247,64 @@ async function tryAutoClaimBonus() {
   }
 }
 
+async function ensureManagedPlaybackState() {
+  const channel = getChannelFromLocation(window.location.pathname);
+  if (!channel) {
+    return;
+  }
+
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "watch:authorize",
+      channel
+    });
+  } catch (_error) {
+    return;
+  }
+
+  if (!response?.ok || !response.authorized) {
+    return;
+  }
+
+  const video = findPlayerVideo();
+  if (!video) {
+    return;
+  }
+
+  if (needsVolumeCorrection(video) && canSafelyUnmute()) {
+    video.muted = false;
+    if (!Number.isFinite(video.volume) || video.volume < MIN_WATCH_VOLUME) {
+      video.volume = MIN_WATCH_VOLUME;
+    }
+    video.dispatchEvent(new Event("volumechange", { bubbles: true }));
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: "watch:playback-corrected",
+        channel
+      });
+    } catch (_error) {
+      // Ignore transient extension reload gaps.
+    }
+  }
+
+  if (!needsPlaybackResume(video)) {
+    return;
+  }
+
+  try {
+    await video.play();
+    await chrome.runtime.sendMessage({
+      type: "watch:playback-resumed",
+      channel
+    });
+  } catch (_error) {
+    // Playback resume can still be blocked by page/player state.
+  }
+}
+
 function getChannelFromLocation(pathname) {
   const cleanPath = String(pathname || "").replace(/^\/+/, "");
   if (!cleanPath || cleanPath.includes("/")) {
@@ -284,6 +362,23 @@ function findClaimButton() {
   }
 
   return null;
+}
+
+function findPlayerVideo() {
+  const video = document.querySelector("video");
+  return video instanceof HTMLVideoElement ? video : null;
+}
+
+function needsVolumeCorrection(video) {
+  return video.muted || video.volume <= 0;
+}
+
+function needsPlaybackResume(video) {
+  return video.paused && !video.ended;
+}
+
+function canSafelyUnmute() {
+  return hasDocumentInteraction || Boolean(globalThis.navigator?.userActivation?.hasBeenActive);
 }
 
 async function reportClaimAvailability(channel, available) {

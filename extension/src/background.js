@@ -113,6 +113,23 @@ async function handleMessage(message, sender) {
       await handleWatchUptime(message);
       return {};
     }
+    case "watch:authorize": {
+      return {
+        authorized: await canManageWatchTab(message, sender)
+      };
+    }
+    case "watch:playback-corrected": {
+      await appendDebugLog("watch:playback-corrected", {
+        channel: String(message?.channel || "").toLowerCase()
+      });
+      return {};
+    }
+    case "watch:playback-resumed": {
+      await appendDebugLog("watch:playback-resumed", {
+        channel: String(message?.channel || "").toLowerCase()
+      });
+      return {};
+    }
     case "claim:authorize": {
       return {
         authorized: await canAutoClaim(message, sender)
@@ -506,6 +523,10 @@ function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUpt
 }
 
 async function canAutoClaim(message, sender) {
+  return canManageWatchTab(message, sender);
+}
+
+async function canManageWatchTab(message, sender) {
   const channel = String(message?.channel || "").toLowerCase();
   const tabId = sender?.tab?.id;
   if (!channel || !Number.isInteger(tabId)) {
