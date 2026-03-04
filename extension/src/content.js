@@ -16,6 +16,7 @@ const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;
+let lastClaimAvailabilityKey = null;
 
 void init();
 
@@ -43,6 +44,7 @@ async function syncButton() {
 
   lastChannel = channel;
   lastReportedUptimeKey = null;
+  lastClaimAvailabilityKey = null;
 
   if (!channel) {
     removeButton();
@@ -190,6 +192,8 @@ async function tryAutoClaimBonus() {
   }
 
   const claimButton = findClaimButton();
+  await reportClaimAvailability(channel, Boolean(claimButton && !claimButton.disabled));
+
   if (!claimButton || claimButton.disabled || claimButton.dataset[AUTO_CLAIM_MARKER] === "1") {
     return;
   }
@@ -217,6 +221,7 @@ async function tryAutoClaimBonus() {
       type: "claim:record",
       channel
     });
+    lastClaimAvailabilityKey = `${channel}:0`;
   } catch (_error) {
     delete claimButton.dataset[AUTO_CLAIM_MARKER];
   }
@@ -279,6 +284,25 @@ function findClaimButton() {
   }
 
   return null;
+}
+
+async function reportClaimAvailability(channel, available) {
+  const dedupeKey = `${channel}:${available ? 1 : 0}`;
+  if (dedupeKey === lastClaimAvailabilityKey) {
+    return;
+  }
+
+  lastClaimAvailabilityKey = dedupeKey;
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "claim:status",
+      channel,
+      available
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
 }
 
 function readCandidateTexts(selector) {

@@ -99,6 +99,13 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
       label.appendChild(claimLabel);
     }
 
+    if (isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[entry.name])) {
+      const claimReadyLabel = document.createElement("span");
+      claimReadyLabel.className = "channel-claim-ready";
+      claimReadyLabel.textContent = "🟡";
+      label.appendChild(claimReadyLabel);
+    }
+
     const controls = document.createElement("div");
     controls.className = "channel-controls";
 
@@ -179,6 +186,10 @@ function formatWatchtime(session) {
 function getClaimCount(stats) {
   const count = Number(stats?.count);
   return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function isClaimAvailable(state) {
+  return Boolean(state?.available);
 }
 
 function renderDebug(runtimeState, debugLog) {

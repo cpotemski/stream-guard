@@ -11,7 +11,8 @@ export const DEFAULT_RUNTIME_STATE = {
   detachedChannels: [],
   watchSessionsByChannel: {},
   broadcastSessionsByChannel: {},
-  claimStatsByChannel: {}
+  claimStatsByChannel: {},
+  claimAvailabilityByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -67,6 +68,9 @@ export async function getRuntimeState() {
     stored.broadcastSessionsByChannel
   );
   const claimStatsByChannel = normalizeClaimStatsByChannel(stored.claimStatsByChannel);
+  const claimAvailabilityByChannel = normalizeClaimAvailabilityByChannel(
+    stored.claimAvailabilityByChannel
+  );
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
@@ -74,7 +78,8 @@ export async function getRuntimeState() {
     detachedChannels,
     watchSessionsByChannel,
     broadcastSessionsByChannel,
-    claimStatsByChannel
+    claimStatsByChannel,
+    claimAvailabilityByChannel
   };
 }
 
@@ -112,6 +117,12 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.claimStatsByChannel !== undefined) {
     next.claimStatsByChannel = normalizeClaimStatsByChannel(partialState.claimStatsByChannel);
+  }
+
+  if (partialState.claimAvailabilityByChannel !== undefined) {
+    next.claimAvailabilityByChannel = normalizeClaimAvailabilityByChannel(
+      partialState.claimAvailabilityByChannel
+    );
   }
 
   await chrome.storage.local.set(next);
@@ -255,5 +266,28 @@ function normalizeClaimStats(value) {
   return {
     count,
     lastClaimAt: Number.isFinite(lastClaimAt) && lastClaimAt > 0 ? lastClaimAt : 0
+  };
+}
+
+function normalizeClaimAvailabilityByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, state]) => [
+        String(channel || "").toLowerCase(),
+        normalizeClaimAvailability(state)
+      ])
+      .filter(([channel, state]) => channel && state)
+  );
+}
+
+function normalizeClaimAvailability(value) {
+  const available = Boolean(value?.available);
+  const seenAt = Math.round(Number(value?.seenAt));
+
+  return {
+    available,
+    seenAt: Number.isFinite(seenAt) && seenAt > 0 ? seenAt : 0
   };
 }

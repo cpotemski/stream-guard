@@ -170,6 +170,11 @@
   white-space: nowrap;
 }
 
+.channel-claim-ready {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .channel-controls {
   display: flex;
   gap: 4px;
