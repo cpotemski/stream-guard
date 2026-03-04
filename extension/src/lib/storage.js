@@ -9,7 +9,8 @@ export const DEFAULT_RUNTIME_STATE = {
   managedTabs: [],
   managedTabsByChannel: {},
   detachedChannels: [],
-  watchSessionsByChannel: {}
+  watchSessionsByChannel: {},
+  broadcastSessionsByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -61,12 +62,16 @@ export async function getRuntimeState() {
   const managedTabsByChannel = normalizeManagedTabsByChannel(stored.managedTabsByChannel);
   const detachedChannels = normalizeChannelList(stored.detachedChannels);
   const watchSessionsByChannel = normalizeWatchSessionsByChannel(stored.watchSessionsByChannel);
+  const broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
+    stored.broadcastSessionsByChannel
+  );
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
     managedTabsByChannel,
     detachedChannels,
-    watchSessionsByChannel
+    watchSessionsByChannel,
+    broadcastSessionsByChannel
   };
 }
 
@@ -94,6 +99,12 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.watchSessionsByChannel !== undefined) {
     next.watchSessionsByChannel = normalizeWatchSessionsByChannel(partialState.watchSessionsByChannel);
+  }
+
+  if (partialState.broadcastSessionsByChannel !== undefined) {
+    next.broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
+      partialState.broadcastSessionsByChannel
+    );
   }
 
   await chrome.storage.local.set(next);
@@ -186,4 +197,33 @@ function normalizeWatchSession(value) {
   }
 
   return { startedAt };
+}
+
+function normalizeBroadcastSessionsByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, session]) => [
+        String(channel || "").toLowerCase(),
+        normalizeBroadcastSession(session)
+      ])
+      .filter(([channel, session]) => channel && session)
+  );
+}
+
+function normalizeBroadcastSession(value) {
+  const estimatedStartedAt = Math.round(Number(value?.estimatedStartedAt));
+  const lastUptimeSeconds = Math.round(Number(value?.lastUptimeSeconds));
+
+  if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
+    return null;
+  }
+
+  return {
+    estimatedStartedAt,
+    lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) && lastUptimeSeconds >= 0
+      ? lastUptimeSeconds
+      : 0
+  };
 }

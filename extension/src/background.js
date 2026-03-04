@@ -99,12 +99,17 @@ async function handleMessage(message) {
       await setRuntimeState({
         managedTabsByChannel: {},
         detachedChannels: [],
-        watchSessionsByChannel: {}
+        watchSessionsByChannel: {},
+        broadcastSessionsByChannel: {}
       });
       const settings = await setSettings({ autoManage: false });
       await syncAlarm(false);
       await updateBadge(settings);
       return { settings, closedTabs };
+    }
+    case "watch:uptime": {
+      await handleWatchUptime(message);
+      return {};
     }
     default:
       throw new Error("Unsupported message type.");
@@ -129,6 +134,7 @@ async function reconcileManagedTabs(settings) {
   const nextManagedTabsByChannel = { ...runtimeState.managedTabsByChannel };
   const nextDetachedChannels = new Set(runtimeState.detachedChannels);
   const nextWatchSessionsByChannel = { ...runtimeState.watchSessionsByChannel };
+  const nextBroadcastSessionsByChannel = { ...runtimeState.broadcastSessionsByChannel };
 
   await appendDebugLog("reconcile:start", {
     prioritizedChannels,
@@ -155,6 +161,7 @@ async function reconcileManagedTabs(settings) {
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
+      delete nextBroadcastSessionsByChannel[channel];
       nextDetachedChannels.delete(channel);
       continue;
     }
@@ -167,6 +174,7 @@ async function reconcileManagedTabs(settings) {
       });
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
+      delete nextBroadcastSessionsByChannel[channel];
       continue;
     }
 
@@ -192,6 +200,7 @@ async function reconcileManagedTabs(settings) {
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
+      delete nextBroadcastSessionsByChannel[channel];
       nextDetachedChannels.add(channel);
       continue;
     }
@@ -219,6 +228,7 @@ async function reconcileManagedTabs(settings) {
       nextWatchSessionsByChannel[channel] = {
         startedAt: Date.now()
       };
+      delete nextBroadcastSessionsByChannel[channel];
       await appendDebugLog("reconcile:open-tab", {
         channel,
         tabId
@@ -238,15 +248,23 @@ async function reconcileManagedTabs(settings) {
     }
   }
 
+  for (const channel of Object.keys(nextBroadcastSessionsByChannel)) {
+    if (!nextManagedTabsByChannel[channel]) {
+      delete nextBroadcastSessionsByChannel[channel];
+    }
+  }
+
   await setRuntimeState({
     managedTabsByChannel: nextManagedTabsByChannel,
     detachedChannels: [...nextDetachedChannels],
-    watchSessionsByChannel: nextWatchSessionsByChannel
+    watchSessionsByChannel: nextWatchSessionsByChannel,
+    broadcastSessionsByChannel: nextBroadcastSessionsByChannel
   });
   await appendDebugLog("reconcile:done", {
     managedTabsByChannel: nextManagedTabsByChannel,
     detachedChannels: [...nextDetachedChannels],
-    watchSessionsByChannel: nextWatchSessionsByChannel
+    watchSessionsByChannel: nextWatchSessionsByChannel,
+    broadcastSessionsByChannel: nextBroadcastSessionsByChannel
   });
   return nextManagedTabsByChannel;
 }
@@ -311,9 +329,96 @@ async function resetManagedWatchState() {
     managedTabs: [],
     managedTabsByChannel: {},
     detachedChannels: [],
-    watchSessionsByChannel: {}
+    watchSessionsByChannel: {},
+    broadcastSessionsByChannel: {}
   });
   await appendDebugLog("reset:done", {});
+}
+
+async function handleWatchUptime(message) {
+  const channel = String(message?.channel || "").toLowerCase();
+  const uptimeSeconds = Math.floor(Number(message?.uptimeSeconds));
+
+  if (!channel || !Number.isFinite(uptimeSeconds) || uptimeSeconds < 0) {
+    return;
+  }
+
+  const runtimeState = await getRuntimeState();
+  if (!runtimeState.managedTabsByChannel[channel]) {
+    return;
+  }
+
+  const estimatedStartedAt = Date.now() - (uptimeSeconds * 1000);
+  const currentBroadcast = runtimeState.broadcastSessionsByChannel[channel];
+  const nextBroadcastSessionsByChannel = {
+    ...runtimeState.broadcastSessionsByChannel
+  };
+  const nextWatchSessionsByChannel = {
+    ...runtimeState.watchSessionsByChannel
+  };
+
+  if (!currentBroadcast) {
+    nextBroadcastSessionsByChannel[channel] = {
+      estimatedStartedAt,
+      lastUptimeSeconds: uptimeSeconds
+    };
+    await setRuntimeState({
+      broadcastSessionsByChannel: nextBroadcastSessionsByChannel
+    });
+    await appendDebugLog("watch:uptime-init", {
+      channel,
+      uptimeSeconds,
+      estimatedStartedAt
+    });
+    return;
+  }
+
+  const broadcastRestarted = hasBroadcastRestarted(
+    currentBroadcast,
+    estimatedStartedAt,
+    uptimeSeconds
+  );
+
+  nextBroadcastSessionsByChannel[channel] = {
+    estimatedStartedAt,
+    lastUptimeSeconds: uptimeSeconds
+  };
+
+  if (broadcastRestarted) {
+    nextWatchSessionsByChannel[channel] = {
+      startedAt: Date.now()
+    };
+    await appendDebugLog("watch:session-reset", {
+      channel,
+      previousBroadcast: currentBroadcast,
+      uptimeSeconds,
+      estimatedStartedAt
+    });
+  }
+
+  await setRuntimeState({
+    broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+    watchSessionsByChannel: nextWatchSessionsByChannel
+  });
+}
+
+function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUptimeSeconds) {
+  const previousEstimatedStartedAt = Number(currentBroadcast?.estimatedStartedAt);
+  const previousUptimeSeconds = Number(currentBroadcast?.lastUptimeSeconds);
+
+  if (!Number.isFinite(previousEstimatedStartedAt) || previousEstimatedStartedAt <= 0) {
+    return false;
+  }
+
+  if (!Number.isFinite(previousUptimeSeconds) || previousUptimeSeconds < 0) {
+    return false;
+  }
+
+  if (nextUptimeSeconds + 30 < previousUptimeSeconds) {
+    return true;
+  }
+
+  return Math.abs(nextEstimatedStartedAt - previousEstimatedStartedAt) > 120000;
 }
 
 async function appendDebugLog(event, details) {

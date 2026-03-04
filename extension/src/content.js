@@ -1,7 +1,15 @@
 const BUTTON_ID = "tw-watch-guard-star";
 const TOAST_ID = "tw-watch-guard-toast";
+const UPTIME_SELECTOR_CANDIDATES = [
+  ".live-time p",
+  ".live-time [aria-hidden='true']",
+  "[data-a-target='stream-time']",
+  "[data-test-selector='stream-time-value']",
+  ".live-time"
+];
 
 let lastChannel = null;
+let lastReportedUptimeKey = null;
 
 void init();
 
@@ -10,16 +18,21 @@ async function init() {
   window.setInterval(() => {
     void syncButton();
   }, 1000);
+  window.setInterval(() => {
+    void reportWatchUptime();
+  }, 15000);
 }
 
 async function syncButton() {
   const channel = getChannelFromLocation(window.location.pathname);
   if (channel === lastChannel) {
     placeButton();
+    void reportWatchUptime();
     return;
   }
 
   lastChannel = channel;
+  lastReportedUptimeKey = null;
 
   if (!channel) {
     removeButton();
@@ -27,6 +40,7 @@ async function syncButton() {
   }
 
   await injectButton(channel);
+  void reportWatchUptime();
 }
 
 async function injectButton(channel) {
@@ -129,6 +143,35 @@ function showToast(message) {
 
 showToast.timeoutId = 0;
 
+async function reportWatchUptime() {
+  const channel = getChannelFromLocation(window.location.pathname);
+  if (!channel) {
+    return;
+  }
+
+  const uptimeSeconds = getVisibleStreamUptimeSeconds();
+  if (uptimeSeconds === null) {
+    return;
+  }
+
+  const dedupeKey = `${channel}:${uptimeSeconds}`;
+  if (dedupeKey === lastReportedUptimeKey) {
+    return;
+  }
+
+  lastReportedUptimeKey = dedupeKey;
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "watch:uptime",
+      channel,
+      uptimeSeconds
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
+}
+
 function getChannelFromLocation(pathname) {
   const cleanPath = String(pathname || "").replace(/^\/+/, "");
   if (!cleanPath || cleanPath.includes("/")) {
@@ -147,4 +190,112 @@ function getChannelFromLocation(pathname) {
 
   const normalized = cleanPath.toLowerCase();
   return reserved.has(normalized) ? null : normalized;
+}
+
+function getVisibleStreamUptimeSeconds() {
+  let bestMatch = null;
+
+  for (const selector of UPTIME_SELECTOR_CANDIDATES) {
+    const uptimeTexts = readCandidateTexts(selector);
+
+    for (const uptimeText of uptimeTexts) {
+      const uptimeSeconds = parseUptimeText(uptimeText);
+      if (uptimeSeconds !== null && (bestMatch === null || uptimeSeconds > bestMatch)) {
+        bestMatch = uptimeSeconds;
+      }
+    }
+  }
+
+  const pageText = String(document.body?.innerText || "").trim();
+  const labeledMatch = parseLabeledUptimeText(pageText);
+  if (labeledMatch !== null) {
+    return labeledMatch;
+  }
+
+  const pageWideMatch = parseLargestUptimeText(pageText);
+  if (pageWideMatch !== null && (bestMatch === null || pageWideMatch > bestMatch)) {
+    bestMatch = pageWideMatch;
+  }
+
+  return bestMatch;
+}
+
+function readCandidateTexts(selector) {
+  const nodes = document.querySelectorAll(selector);
+  const values = [];
+
+  for (const node of nodes) {
+    const text = String(node?.textContent || "").trim();
+    if (text) {
+      values.push(text);
+    }
+  }
+
+  return values;
+}
+
+function parseUptimeText(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const match = text.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+  if (!match) {
+    return null;
+  }
+
+  return parseDurationToken(match[1]);
+}
+
+function parseLabeledUptimeText(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const match = text.match(
+    /\b(\d{1,2}:\d{2}(?::\d{2})?)\b(?=[^\n]{0,80}\bsince\s+live\b)/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  return parseDurationToken(match[1]);
+}
+
+function parseLargestUptimeText(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  const matches = [...text.matchAll(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/g)];
+  let bestMatch = null;
+
+  for (const match of matches) {
+    const uptimeSeconds = parseDurationToken(match[1]);
+    if (uptimeSeconds !== null && (bestMatch === null || uptimeSeconds > bestMatch)) {
+      bestMatch = uptimeSeconds;
+    }
+  }
+
+  return bestMatch;
+}
+
+function parseDurationToken(value) {
+  const parts = String(value || "").split(":").map((part) => Number(part));
+  if (parts.some((part) => !Number.isInteger(part))) {
+    return null;
+  }
+
+  if (parts.length === 2) {
+    return (parts[0] * 60) + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return (parts[0] * 3600) + (parts[1] * 60) + parts[2];
+  }
+
+  return null;
 }
