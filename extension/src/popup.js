@@ -4,8 +4,17 @@ const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
 const debugOutput = document.getElementById("debug-output");
+const downloadDebugButton = document.getElementById("download-debug");
+const QUICK_POLL_INTERVAL_MS = 5000;
+const QUICK_POLL_WINDOW_MS = 30000;
+const SLOW_POLL_INTERVAL_MS = 60000;
+const RENDER_INTERVAL_MS = 1000;
+const DEBUG_PREVIEW_EVENT_COUNT = 10;
 
 let latestSnapshot = null;
+let refreshIntervalId = 0;
+let refreshWindowUntil = 0;
+let isRefreshing = false;
 
 void init();
 
@@ -13,8 +22,13 @@ async function init() {
   bindEvents();
   window.setInterval(() => {
     renderCurrent();
-  }, 1000);
-  await refresh();
+  }, RENDER_INTERVAL_MS);
+  startRefreshWindow();
+}
+
+function startRefreshWindow() {
+  refreshWindowUntil = Date.now() + QUICK_POLL_WINDOW_MS;
+  scheduleNextRefresh(0);
 }
 
 function bindEvents() {
@@ -22,28 +36,76 @@ function bindEvents() {
     await chrome.runtime.sendMessage({
       type: watchToggle.checked ? "watch:start" : "watch:stop"
     });
-    await refresh();
+    startRefreshWindow();
+  });
+
+  downloadDebugButton.addEventListener("click", () => {
+    if (!latestSnapshot) {
+      return;
+    }
+
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      settings: latestSnapshot.settings,
+      runtimeState: latestSnapshot.runtimeState,
+      debugLog: latestSnapshot.debugLog,
+      liveStatusByChannel: latestSnapshot.liveStatusByChannel
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, "-");
+
+    link.href = url;
+    link.download = `twitch-watch-guard-debug-${timestamp}.json`;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   });
 }
 
 async function refresh() {
-  const response = await chrome.runtime.sendMessage({ type: "debug:get" });
-  if (!response?.ok) {
+  if (isRefreshing) {
     return;
   }
 
-  const liveStatusByChannel = await getChannelsLiveStatus(
-    response.settings.importantChannels.map((entry) => entry.name)
-  );
+  isRefreshing = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "debug:get" });
+    if (!response?.ok) {
+      return;
+    }
 
-  latestSnapshot = {
-    settings: response.settings,
-    runtimeState: response.runtimeState,
-    debugLog: response.debugLog,
-    liveStatusByChannel
-  };
+    const liveStatusByChannel = await getChannelsLiveStatus(
+      response.settings.importantChannels.map((entry) => entry.name)
+    );
 
-  renderCurrent();
+    latestSnapshot = {
+      settings: response.settings,
+      runtimeState: response.runtimeState,
+      debugLog: response.debugLog,
+      liveStatusByChannel
+    };
+
+    renderCurrent();
+  } finally {
+    isRefreshing = false;
+  }
+}
+
+function scheduleNextRefresh(delayMs = QUICK_POLL_INTERVAL_MS) {
+  window.clearTimeout(refreshIntervalId);
+  refreshIntervalId = window.setTimeout(() => {
+    void refresh();
+
+    const now = Date.now();
+    const interval = now < refreshWindowUntil ? QUICK_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
+    scheduleNextRefresh(interval);
+  }, delayMs);
 }
 
 function renderCurrent() {
@@ -72,10 +134,14 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
 
     const label = document.createElement("div");
     label.className = "channel-label";
+    const streamStatus = liveStatusByChannel[entry.name];
 
     const status = document.createElement("span");
     status.className = "channel-status";
-    status.textContent = getChannelIndicator(liveStatusByChannel[entry.name]);
+    status.textContent = getChannelIndicator(
+      streamStatus,
+      runtimeState.playbackStateByChannel?.[entry.name]
+    );
 
     const name = document.createElement("span");
     name.textContent = `${index + 1}. ${entry.name}`;
@@ -83,11 +149,11 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
     label.appendChild(status);
     label.appendChild(name);
 
-    const watchtime = formatWatchtime(runtimeState.watchSessionsByChannel?.[entry.name]);
-    if (watchtime) {
+    if (streamStatus === "live") {
+      const claimElapsed = formatLastClaimDuration(runtimeState.claimStatsByChannel?.[entry.name]);
       const watchtimeLabel = document.createElement("span");
       watchtimeLabel.className = "channel-watchtime";
-      watchtimeLabel.textContent = watchtime;
+      watchtimeLabel.textContent = claimElapsed;
       label.appendChild(watchtimeLabel);
     }
 
@@ -95,7 +161,7 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
     if (claimCount !== null) {
       const claimLabel = document.createElement("span");
       claimLabel.className = "channel-claims";
-      claimLabel.textContent = `🎁${claimCount}`;
+      claimLabel.textContent = `🎁 ${claimCount}`;
       label.appendChild(claimLabel);
     }
 
@@ -128,15 +194,51 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
   renderDebug(runtimeState, debugLog);
 }
 
-function getChannelIndicator(status) {
+function getChannelIndicator(status, playbackState) {
+  const state = getPlaybackState(playbackState);
+
+  if (status === "offline") {
+    return "⚪";
+  }
+
+  if (status === "unknown") {
+    if (state === "paused") {
+      return "⏸︎";
+    }
+
+    if (state === "muted") {
+      return "🔇";
+    }
+
+    return "🟠";
+  }
+
+  if (state === "paused") {
+    return "⏸︎";
+  }
+
+  if (state === "muted") {
+    return "🔇";
+  }
+
   switch (status) {
     case "live":
       return "🔴";
-    case "offline":
-      return "⚪️";
     default:
-      return "❔";
+      return "🔴";
   }
+}
+
+function getPlaybackState(playbackState) {
+  if (typeof playbackState === "string") {
+    return playbackState;
+  }
+
+  if (playbackState && typeof playbackState === "object") {
+    return String(playbackState.state || "").toLowerCase();
+  }
+
+  return "";
 }
 
 function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
@@ -165,16 +267,16 @@ function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
   return button;
 }
 
-function formatWatchtime(session) {
-  const startedAt = Number(session?.startedAt);
-  if (!Number.isFinite(startedAt) || startedAt <= 0) {
-    return "";
+function formatLastClaimDuration(claimStats) {
+  const lastClaimAt = Number(claimStats?.lastClaimAt);
+  if (!Number.isFinite(lastClaimAt) || lastClaimAt <= 0) {
+    return "0m";
   }
 
-  const elapsedMs = Math.max(0, Date.now() - startedAt);
-  const totalMinutes = Math.floor(elapsedMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
+  const elapsedMs = Math.max(0, Date.now() - lastClaimAt);
+  const elapsedMinutes = Math.floor(elapsedMs / 60000);
+  const hours = Math.floor(elapsedMinutes / 60);
+  const minutes = elapsedMinutes % 60;
 
   if (hours > 0) {
     return `${hours}h ${String(minutes).padStart(2, "0")}m`;
@@ -193,9 +295,74 @@ function isClaimAvailable(state) {
 }
 
 function renderDebug(runtimeState, debugLog) {
-  const payload = {
-    runtimeState,
-    debugLog
-  };
-  debugOutput.textContent = JSON.stringify(payload, null, 2);
+  const lines = [];
+  const managedChannels = Object.keys(runtimeState.managedTabsByChannel || {});
+  const playback = runtimeState.playbackStateByChannel || {};
+
+  lines.push("Status-Übersicht:");
+  lines.push(`Live-Sessions: ${Object.keys(runtimeState.broadcastSessionsByChannel || {}).length}`);
+  lines.push(`Managed Tabs: ${runtimeState.managedTabs?.length || 0}`);
+  lines.push(`Überwachte Kanäle: ${managedChannels.length}`);
+  lines.push(`Detached: ${(runtimeState.detachedChannels || []).length}`);
+
+  lines.push("Playback:");
+  if (managedChannels.length === 0) {
+    lines.push("  - keine verwalteten Kanäle");
+  } else {
+    managedChannels.forEach((channel) => {
+      const state = playback[channel] || "unknown";
+      lines.push(`  - ${channel}: ${state}`);
+    });
+  }
+
+  lines.push("Recent Events:");
+  const tail = (debugLog || []).slice(-DEBUG_PREVIEW_EVENT_COUNT);
+  if (tail.length === 0) {
+    lines.push("  - keine Events");
+  } else {
+    tail.forEach((entry) => {
+      if (!entry) {
+        return;
+      }
+
+      const ts = entry.timestamp || "";
+      const eventTime = ts ? new Date(ts).toLocaleTimeString("de-DE", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }) : "??:??:??";
+      const event = entry.event || "unknown";
+      const details = summarizeEventDetails(entry.details);
+      lines.push(`  [${eventTime}] ${event}${details ? ` ${details}` : ""}`);
+    });
+  }
+
+  debugOutput.textContent = lines.join("\n");
+}
+
+function summarizeEventDetails(details) {
+  if (!details || typeof details !== "object") {
+    return "";
+  }
+
+  const channel = details.channel || details.stateChannel;
+  const state = details.state;
+  const tabId = details.tabId;
+
+  if (!channel && !state && tabId === undefined) {
+    return "";
+  }
+
+  const chunks = [];
+  if (channel) {
+    chunks.push(`channel=${channel}`);
+  }
+  if (state) {
+    chunks.push(`state=${state}`);
+  }
+  if (typeof tabId === "number") {
+    chunks.push(`tab=${tabId}`);
+  }
+
+  return `(${chunks.join(", ")})`;
 }

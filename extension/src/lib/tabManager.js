@@ -20,33 +20,6 @@ export async function openWatchTab(channel) {
   return tab.id;
 }
 
-export async function openWatchTabs(channels) {
-  const targetChannels = (Array.isArray(channels) ? channels : []).filter(Boolean);
-  if (targetChannels.length === 0) {
-    return [];
-  }
-
-  const createdTabs = [];
-
-  for (const channel of targetChannels) {
-    const tab = await chrome.tabs.create({
-      url: `https://www.twitch.tv/${channel}`,
-      active: false
-    });
-    createdTabs.push(tab);
-  }
-
-  const tabIds = createdTabs
-    .map((tab) => tab.id)
-    .filter((tabId) => Number.isInteger(tabId));
-
-  if (tabIds.length > 0) {
-    await ensureWatchGroup(tabIds);
-  }
-
-  return tabIds;
-}
-
 export async function ensureWatchGroup(tabIds) {
   if (!Array.isArray(tabIds) || tabIds.length === 0) {
     return null;

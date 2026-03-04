@@ -102,7 +102,8 @@ async function handleMessage(message, sender) {
         watchSessionsByChannel: {},
         broadcastSessionsByChannel: {},
         claimStatsByChannel: {},
-        claimAvailabilityByChannel: {}
+        claimAvailabilityByChannel: {},
+        playbackStateByChannel: {}
       });
       const settings = await setSettings({ autoManage: false });
       await syncAlarm(false);
@@ -127,6 +128,39 @@ async function handleMessage(message, sender) {
     case "watch:playback-resumed": {
       await appendDebugLog("watch:playback-resumed", {
         channel: String(message?.channel || "").toLowerCase()
+      });
+      return {};
+    }
+    case "watch:playback-state": {
+      const channel = String(message?.channel || "").toLowerCase();
+      if (!channel || !Number.isInteger(sender?.tab?.id)) {
+        await appendDebugLog("playback-state:invalid", {
+          channel,
+          tabId: sender?.tab?.id
+        });
+        return {};
+      }
+
+      const runtimeState = await getRuntimeState();
+      if (runtimeState.managedTabsByChannel[channel] !== sender.tab.id) {
+        await appendDebugLog("playback-state:ignored", {
+          channel,
+          senderTabId: sender.tab.id,
+          expectedTabId: runtimeState.managedTabsByChannel[channel] || null
+        });
+        return {};
+      }
+
+      const state = message?.state === "paused" ? "paused" : message?.state === "muted" ? "muted" : "ok";
+      await appendDebugLog("playback-state:updated", {
+        channel,
+        state
+      });
+      await setRuntimeState({
+        playbackStateByChannel: {
+          ...runtimeState.playbackStateByChannel,
+          [channel]: state
+        }
       });
       return {};
     }
@@ -169,22 +203,13 @@ async function reconcileManagedTabs(settings) {
   const nextBroadcastSessionsByChannel = { ...runtimeState.broadcastSessionsByChannel };
   const nextClaimStatsByChannel = { ...runtimeState.claimStatsByChannel };
   const nextClaimAvailabilityByChannel = { ...runtimeState.claimAvailabilityByChannel };
+  const nextPlaybackStateByChannel = { ...runtimeState.playbackStateByChannel };
 
   await appendDebugLog("reconcile:start", {
     prioritizedChannels,
     liveChannels,
     runtimeState
   });
-
-  if (
-    Object.keys(nextManagedTabsByChannel).length === 0 &&
-    runtimeState.managedTabs.length > 0
-  ) {
-    await appendDebugLog("reconcile:close-legacy-tabs", {
-      tabIds: runtimeState.managedTabs
-    });
-    await closeManagedWatchTabs(runtimeState.managedTabs);
-  }
 
   for (const [channel, tabId] of Object.entries(runtimeState.managedTabsByChannel)) {
     if (!desiredChannels.has(channel)) {
@@ -198,6 +223,7 @@ async function reconcileManagedTabs(settings) {
       delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
+      delete nextPlaybackStateByChannel[channel];
       nextDetachedChannels.delete(channel);
       continue;
     }
@@ -213,6 +239,7 @@ async function reconcileManagedTabs(settings) {
       delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
+      delete nextPlaybackStateByChannel[channel];
       continue;
     }
 
@@ -241,6 +268,7 @@ async function reconcileManagedTabs(settings) {
       delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
+      delete nextPlaybackStateByChannel[channel];
       nextDetachedChannels.add(channel);
       continue;
     }
@@ -250,11 +278,10 @@ async function reconcileManagedTabs(settings) {
         startedAt: Date.now()
       };
     }
-
     if (!nextClaimStatsByChannel[channel]) {
       nextClaimStatsByChannel[channel] = {
         count: 0,
-        lastClaimAt: 0
+        lastClaimAt: Date.now()
       };
     }
 
@@ -285,7 +312,7 @@ async function reconcileManagedTabs(settings) {
       delete nextBroadcastSessionsByChannel[channel];
       nextClaimStatsByChannel[channel] = {
         count: 0,
-        lastClaimAt: 0
+        lastClaimAt: Date.now()
       };
       nextClaimAvailabilityByChannel[channel] = {
         available: false,
@@ -304,27 +331,35 @@ async function reconcileManagedTabs(settings) {
     }
   }
 
+  const assignedChannels = new Set(Object.keys(nextManagedTabsByChannel));
+
   for (const channel of Object.keys(nextWatchSessionsByChannel)) {
-    if (!nextManagedTabsByChannel[channel]) {
+    if (!assignedChannels.has(channel)) {
       delete nextWatchSessionsByChannel[channel];
     }
   }
 
   for (const channel of Object.keys(nextBroadcastSessionsByChannel)) {
-    if (!nextManagedTabsByChannel[channel]) {
+    if (!assignedChannels.has(channel)) {
       delete nextBroadcastSessionsByChannel[channel];
     }
   }
 
   for (const channel of Object.keys(nextClaimStatsByChannel)) {
-    if (!nextManagedTabsByChannel[channel]) {
+    if (!assignedChannels.has(channel)) {
       delete nextClaimStatsByChannel[channel];
     }
   }
 
   for (const channel of Object.keys(nextClaimAvailabilityByChannel)) {
-    if (!nextManagedTabsByChannel[channel]) {
+    if (!assignedChannels.has(channel)) {
       delete nextClaimAvailabilityByChannel[channel];
+    }
+  }
+
+  for (const channel of Object.keys(nextPlaybackStateByChannel)) {
+    if (!assignedChannels.has(channel)) {
+      delete nextPlaybackStateByChannel[channel];
     }
   }
 
@@ -334,17 +369,45 @@ async function reconcileManagedTabs(settings) {
     watchSessionsByChannel: nextWatchSessionsByChannel,
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
-    claimAvailabilityByChannel: nextClaimAvailabilityByChannel
+    claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
+    playbackStateByChannel: nextPlaybackStateByChannel
   });
+  void requestPlaybackStateForManagedTabs(nextManagedTabsByChannel);
+  setTimeout(
+    () => {
+      void requestPlaybackStateForManagedTabs(nextManagedTabsByChannel);
+    },
+    3000
+  );
   await appendDebugLog("reconcile:done", {
     managedTabsByChannel: nextManagedTabsByChannel,
     detachedChannels: [...nextDetachedChannels],
     watchSessionsByChannel: nextWatchSessionsByChannel,
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
-    claimAvailabilityByChannel: nextClaimAvailabilityByChannel
+    claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
+    playbackStateByChannel: nextPlaybackStateByChannel
   });
   return nextManagedTabsByChannel;
+}
+
+async function requestPlaybackStateForManagedTabs(managedTabsByChannel) {
+  const entries = Object.entries(managedTabsByChannel || {});
+  const targets = entries.filter(([, tabId]) => Number.isInteger(tabId));
+
+  for (const [channel, tabId] of targets) {
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: "watch:request-playback-state",
+        channel
+      });
+    } catch (_error) {
+      await appendDebugLog("reconcile:playback-state-request-failed", {
+        channel,
+        tabId
+      });
+    }
+  }
 }
 
 async function updateBadge(settings) {
@@ -415,7 +478,8 @@ async function resetManagedWatchState() {
     watchSessionsByChannel: {},
     broadcastSessionsByChannel: {},
     claimStatsByChannel: {},
-    claimAvailabilityByChannel: {}
+    claimAvailabilityByChannel: {},
+    playbackStateByChannel: {}
   });
   await appendDebugLog("reset:done", {});
 }
@@ -475,17 +539,17 @@ async function handleWatchUptime(message) {
     lastUptimeSeconds: uptimeSeconds
   };
 
-  if (broadcastRestarted) {
-    nextWatchSessionsByChannel[channel] = {
-      startedAt: Date.now()
-    };
-    nextClaimStatsByChannel[channel] = {
-      count: 0,
-      lastClaimAt: 0
-    };
-    nextClaimAvailabilityByChannel[channel] = {
-      available: false,
-      seenAt: 0
+    if (broadcastRestarted) {
+      nextWatchSessionsByChannel[channel] = {
+        startedAt: Date.now()
+      };
+      nextClaimStatsByChannel[channel] = {
+        count: 0,
+        lastClaimAt: Date.now()
+      };
+      nextClaimAvailabilityByChannel[channel] = {
+        available: false,
+        seenAt: 0
     };
     await appendDebugLog("watch:session-reset", {
       channel,

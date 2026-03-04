@@ -7,22 +7,43 @@ const UPTIME_SELECTOR_CANDIDATES = [
   "[data-test-selector='stream-time-value']",
   ".live-time"
 ];
-const CLAIM_BUTTON_SELECTOR_CANDIDATES = [
-  "[data-test-selector='community-points-summary'] [class*='claimable-bonus'] button"
-];
 const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
-const MIN_WATCH_VOLUME = 0.01;
-const INTERACTION_EVENTS = ["pointerdown", "keydown", "touchstart", "mousedown"];
+const FAST_PLAYBACK_POLL_INTERVAL_MS = 5000;
+const SLOW_PLAYBACK_POLL_INTERVAL_MS = 60000;
+const FAST_PLAYBACK_REPORT_TICKS = 6;
+const PLAYBACK_REPORT_DEBOUNCE_MS = 350;
+const PLAYBACK_STATE_EVENTS = [
+  "play",
+  "pause",
+  "volumechange",
+  "loadedmetadata",
+  "playing",
+  "waiting"
+];
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;
 let lastClaimAvailabilityKey = null;
-let hasDocumentInteraction = false;
+let lastPlaybackStateKey = null;
+let playbackStatePollTimeoutId = 0;
+let fastPlaybackPollsLeft = 0;
+let playbackStateVideo = null;
+let playbackStateDebounceTimeoutId = 0;
+let requestedPlaybackRefresh = 0;
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "watch:request-playback-state") {
+    window.clearTimeout(requestedPlaybackRefresh);
+    requestedPlaybackRefresh = window.setTimeout(() => {
+      requestedPlaybackRefresh = 0;
+      void ensureManagedPlaybackState();
+    }, 0);
+  }
+});
 
 void init();
 
 async function init() {
-  bindInteractionTracking();
   await syncButton();
   window.setInterval(() => {
     void syncButton();
@@ -36,25 +57,14 @@ async function init() {
   window.setInterval(() => {
     void ensureManagedPlaybackState();
   }, 5000);
-}
-
-function bindInteractionTracking() {
-  for (const eventName of INTERACTION_EVENTS) {
-    window.addEventListener(eventName, markDocumentInteraction, {
-      capture: true,
-      passive: true
-    });
-  }
-}
-
-function markDocumentInteraction() {
-  hasDocumentInteraction = true;
+  startPlaybackStatePolling();
 }
 
 async function syncButton() {
   const channel = getChannelFromLocation(window.location.pathname);
   if (channel === lastChannel) {
     placeButton();
+    attachPlaybackStateWatchers(findPlayerVideo());
     void reportWatchUptime();
     void tryAutoClaimBonus();
     void ensureManagedPlaybackState();
@@ -64,13 +74,17 @@ async function syncButton() {
   lastChannel = channel;
   lastReportedUptimeKey = null;
   lastClaimAvailabilityKey = null;
+  lastPlaybackStateKey = null;
 
   if (!channel) {
+    detachPlaybackStateWatchers();
     removeButton();
     return;
   }
 
   await injectButton(channel);
+  startPlaybackStatePolling();
+  attachPlaybackStateWatchers(findPlayerVideo());
   void reportWatchUptime();
   void tryAutoClaimBonus();
   void ensureManagedPlaybackState();
@@ -143,6 +157,50 @@ function removeButton() {
   if (button) {
     button.remove();
   }
+}
+
+function attachPlaybackStateWatchers(video) {
+  const player = video instanceof HTMLVideoElement ? video : null;
+  if (player === playbackStateVideo) {
+    return;
+  }
+
+  detachPlaybackStateWatchers();
+  playbackStateVideo = player;
+
+  if (!playbackStateVideo) {
+    return;
+  }
+
+  for (const event of PLAYBACK_STATE_EVENTS) {
+    playbackStateVideo.addEventListener(event, onPlaybackStateEvent, { passive: true });
+  }
+  window.addEventListener("visibilitychange", onPlaybackStateEvent);
+}
+
+function detachPlaybackStateWatchers() {
+  if (!playbackStateVideo) {
+    return;
+  }
+
+  for (const event of PLAYBACK_STATE_EVENTS) {
+    playbackStateVideo.removeEventListener(event, onPlaybackStateEvent);
+  }
+  window.removeEventListener("visibilitychange", onPlaybackStateEvent);
+
+  playbackStateVideo = null;
+}
+
+function onPlaybackStateEvent() {
+  schedulePlaybackStateReport();
+}
+
+function schedulePlaybackStateReport() {
+  window.clearTimeout(playbackStateDebounceTimeoutId);
+  playbackStateDebounceTimeoutId = window.setTimeout(() => {
+    playbackStateDebounceTimeoutId = 0;
+    void ensureManagedPlaybackState();
+  }, PLAYBACK_REPORT_DEBOUNCE_MS);
 }
 
 function renderButton(button, isImportant) {
@@ -273,40 +331,105 @@ async function ensureManagedPlaybackState() {
     return;
   }
 
-  if (needsVolumeCorrection(video) && canSafelyUnmute()) {
-    video.muted = false;
-    if (!Number.isFinite(video.volume) || video.volume < MIN_WATCH_VOLUME) {
-      video.volume = MIN_WATCH_VOLUME;
-    }
-    video.dispatchEvent(new Event("volumechange", { bubbles: true }));
-
+  if (needsPlaybackResume(video)) {
     try {
+      await video.play();
       await chrome.runtime.sendMessage({
-        type: "watch:playback-corrected",
+        type: "watch:playback-resumed",
         channel
       });
     } catch (_error) {
-      // Ignore transient extension reload gaps.
+      // Playback resume can still be blocked by page/player state.
     }
   }
 
-  if (!needsPlaybackResume(video)) {
+  if (!video.muted) {
+    await reportManagedPlaybackStateForVideo(channel, video);
+    return;
+  }
+
+  const shortcutTriggered = attemptUnmuteWithShortcut();
+  if (!shortcutTriggered) {
+    await reportManagedPlaybackStateForVideo(channel, video);
     return;
   }
 
   try {
-    await video.play();
     await chrome.runtime.sendMessage({
-      type: "watch:playback-resumed",
+      type: "watch:playback-corrected",
       channel
     });
   } catch (_error) {
-    // Playback resume can still be blocked by page/player state.
+    // Ignore transient extension reload gaps.
+    await reportManagedPlaybackStateForVideo(channel, video);
+    return;
+  }
+
+  await reportManagedPlaybackStateForVideo(channel, video);
+}
+
+async function reportManagedPlaybackState() {
+  const channel = getChannelFromLocation(window.location.pathname);
+  if (!channel) {
+    return;
+  }
+
+  const video = findPlayerVideo();
+  if (!video) {
+    return;
+  }
+
+  attachPlaybackStateWatchers(video);
+  await reportManagedPlaybackStateForVideo(channel, video);
+}
+
+function startPlaybackStatePolling() {
+  fastPlaybackPollsLeft = FAST_PLAYBACK_REPORT_TICKS;
+  void scheduleNextPlaybackStatePoll(0);
+}
+
+function scheduleNextPlaybackStatePoll(delayMs) {
+  window.clearTimeout(playbackStatePollTimeoutId);
+  playbackStatePollTimeoutId = window.setTimeout(() => {
+    void runPlaybackStatePollTick();
+  }, delayMs);
+}
+
+async function runPlaybackStatePollTick() {
+  await reportManagedPlaybackState();
+
+  const inFastPhase = fastPlaybackPollsLeft > 0;
+  if (inFastPhase) {
+    fastPlaybackPollsLeft -= 1;
+  }
+
+  const delayMs = inFastPhase ? FAST_PLAYBACK_POLL_INTERVAL_MS : SLOW_PLAYBACK_POLL_INTERVAL_MS;
+  scheduleNextPlaybackStatePoll(delayMs);
+}
+
+async function reportManagedPlaybackStateForVideo(channel, video) {
+  const playbackState = getPlaybackState(video);
+
+  const dedupeKey = `${channel}:${playbackState}`;
+  if (dedupeKey === lastPlaybackStateKey) {
+    return;
+  }
+
+  lastPlaybackStateKey = dedupeKey;
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "watch:playback-state",
+      channel,
+      state: playbackState
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
   }
 }
 
 function getChannelFromLocation(pathname) {
-  const cleanPath = String(pathname || "").replace(/^\/+/, "");
+  const cleanPath = String(pathname || "").replace(/^\/+|\/+$/g, "");
   if (!cleanPath || cleanPath.includes("/")) {
     return null;
   }
@@ -354,9 +477,19 @@ function getVisibleStreamUptimeSeconds() {
 }
 
 function findClaimButton() {
-  for (const selector of CLAIM_BUTTON_SELECTOR_CANDIDATES) {
-    const button = document.querySelector(selector);
-    if (button instanceof HTMLButtonElement) {
+  const summary = document.querySelector("[data-test-selector='community-points-summary']");
+  if (!summary) {
+    return null;
+  }
+
+  const buttons = summary.querySelectorAll("button");
+
+  for (const button of buttons) {
+    if (!(button instanceof HTMLButtonElement)) {
+      continue;
+    }
+
+    if (button.querySelector("[class*='claimable-bonus']")) {
       return button;
     }
   }
@@ -369,16 +502,73 @@ function findPlayerVideo() {
   return video instanceof HTMLVideoElement ? video : null;
 }
 
-function needsVolumeCorrection(video) {
-  return video.muted || video.volume <= 0;
-}
-
 function needsPlaybackResume(video) {
   return video.paused && !video.ended;
 }
 
-function canSafelyUnmute() {
-  return hasDocumentInteraction || Boolean(globalThis.navigator?.userActivation?.hasBeenActive);
+function getPlaybackState(video) {
+  if (!(video instanceof HTMLVideoElement)) {
+    return "ok";
+  }
+
+  if (needsPlaybackResume(video)) {
+    if (document.hidden || document.visibilityState !== "visible") {
+      return "ok";
+    }
+    return "paused";
+  }
+
+  if (video.muted) {
+    return "muted";
+  }
+
+  return "ok";
+}
+
+function attemptUnmuteWithShortcut() {
+  const target = findPlaybackShortcutTarget();
+  if (!target) {
+    return false;
+  }
+
+  if (target instanceof HTMLElement) {
+    target.focus({ preventScroll: true });
+  }
+
+  const shortcutEventInit = {
+    key: "m",
+    code: "KeyM",
+    keyCode: 77,
+    which: 77,
+    bubbles: true,
+    cancelable: true
+  };
+
+  const keyDown = new KeyboardEvent("keydown", shortcutEventInit);
+  const keyPress = new KeyboardEvent("keypress", shortcutEventInit);
+  const keyUp = new KeyboardEvent("keyup", shortcutEventInit);
+
+  target.dispatchEvent(keyDown);
+  target.dispatchEvent(keyPress);
+  target.dispatchEvent(keyUp);
+  return true;
+}
+
+function findPlaybackShortcutTarget() {
+  const candidates = [
+    document.querySelector("[data-a-target='player-overlay-click-handler']"),
+    document.querySelector("[data-a-target='video-player']"),
+    document.querySelector("main"),
+    document.body
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate instanceof HTMLElement || candidate instanceof Document) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 async function reportClaimAvailability(channel, available) {

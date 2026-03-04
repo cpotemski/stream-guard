@@ -12,7 +12,8 @@ export const DEFAULT_RUNTIME_STATE = {
   watchSessionsByChannel: {},
   broadcastSessionsByChannel: {},
   claimStatsByChannel: {},
-  claimAvailabilityByChannel: {}
+  claimAvailabilityByChannel: {},
+  playbackStateByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -71,6 +72,7 @@ export async function getRuntimeState() {
   const claimAvailabilityByChannel = normalizeClaimAvailabilityByChannel(
     stored.claimAvailabilityByChannel
   );
+  const playbackStateByChannel = normalizePlaybackStateByChannel(stored.playbackStateByChannel);
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
@@ -79,7 +81,8 @@ export async function getRuntimeState() {
     watchSessionsByChannel,
     broadcastSessionsByChannel,
     claimStatsByChannel,
-    claimAvailabilityByChannel
+    claimAvailabilityByChannel,
+    playbackStateByChannel
   };
 }
 
@@ -123,6 +126,10 @@ export async function setRuntimeState(partialState) {
     next.claimAvailabilityByChannel = normalizeClaimAvailabilityByChannel(
       partialState.claimAvailabilityByChannel
     );
+  }
+
+  if (partialState.playbackStateByChannel !== undefined) {
+    next.playbackStateByChannel = normalizePlaybackStateByChannel(partialState.playbackStateByChannel);
   }
 
   await chrome.storage.local.set(next);
@@ -290,4 +297,25 @@ function normalizeClaimAvailability(value) {
     available,
     seenAt: Number.isFinite(seenAt) && seenAt > 0 ? seenAt : 0
   };
+}
+
+function normalizePlaybackStateByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, rawState]) => [
+        String(channel || "").toLowerCase(),
+        normalizePlaybackState(rawState)
+      ])
+      .filter(([channel, state]) => channel && state)
+  );
+}
+
+function normalizePlaybackState(value) {
+  const state = String(value || "").toLowerCase();
+  if (state === "paused" || state === "muted" || state === "ok") {
+    return state;
+  }
+  return null;
 }
