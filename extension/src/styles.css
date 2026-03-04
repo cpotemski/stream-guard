@@ -1,0 +1,174 @@
+.tw-watch-guard-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.6rem;
+  height: 3.6rem;
+  margin-left: 0.8rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: #adadb8;
+  font: 700 2rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.tw-watch-guard-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7f7f8;
+}
+
+.tw-watch-guard-button.is-active {
+  color: #a970ff;
+}
+
+.tw-watch-guard-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 64px;
+  z-index: 2147483647;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  border-radius: 10px;
+  background: rgba(9, 9, 11, 0.96);
+  color: #fafafa;
+  font: 500 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  padding: 8px 10px;
+  pointer-events: none;
+}
+
+.tw-watch-guard-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.popup-body {
+  margin: 0;
+  background: #111827;
+  color: #f9fafb;
+  font: 500 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.popup {
+  width: 320px;
+  padding: 14px;
+  box-sizing: border-box;
+}
+
+.popup-header h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.popup-header p {
+  margin: 4px 0 0;
+  color: #cbd5e1;
+}
+
+.panel {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #374151;
+  border-radius: 12px;
+  background: #1f2937;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toggle-row {
+  margin-bottom: 10px;
+}
+
+.section-title {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.channel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.channel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.channel-item:first-child {
+  border-top: 0;
+}
+
+.channel-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.empty-state {
+  margin: 0;
+  color: #cbd5e1;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.popup-body button,
+.popup-body select,
+.popup-body input {
+  font: inherit;
+}
+
+.popup-body button {
+  border: 0;
+  border-radius: 10px;
+  background: #22c55e;
+  color: #052e16;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.popup-body button.secondary {
+  background: #475569;
+  color: #f8fafc;
+}
+
+.popup-body button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.popup-body select {
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 4px 6px;
+}
+
+.debug-output {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0b1120;
+  color: #d1d5db;
+  padding: 8px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

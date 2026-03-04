@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Twitch Watch Guard</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="popup-body">
+    <main class="popup">
+      <header class="popup-header">
+        <h1>Twitch Watch Guard</h1>
+        <p>Wichtige Channels kompakt verwalten.</p>
+      </header>
+
+      <section class="panel">
+        <label class="row toggle-row">
+          <span>Auto-Manage Watch Tabs</span>
+          <input id="auto-manage" type="checkbox">
+        </label>
+
+        <label class="row">
+          <span>Max parallel Streams</span>
+          <select id="max-streams">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">Wichtige Channels</div>
+        <ul id="channel-list" class="channel-list"></ul>
+        <p id="empty-state" class="empty-state">Noch keine Channels markiert.</p>
+      </section>
+
+      <section class="actions">
+        <button id="start-button" type="button">Open Watch Group</button>
+        <button id="stop-button" type="button" class="secondary">Stop &amp; Close</button>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">Debug</div>
+        <pre id="debug-output" class="debug-output"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+  </html>

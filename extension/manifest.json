@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Twitch Watch Guard",
+  "version": "0.1.7",
+  "description": "Manage important Twitch watch tabs without tab chaos.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "tabGroups",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://www.twitch.tv/*",
+    "https://gql.twitch.tv/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Twitch Watch Guard",
+    "default_popup": "src/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.twitch.tv/*"
+      ],
+      "js": [
+        "src/content.js"
+      ],
+      "css": [
+        "src/styles.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
