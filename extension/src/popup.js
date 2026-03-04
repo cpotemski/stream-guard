@@ -91,6 +91,14 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
       label.appendChild(watchtimeLabel);
     }
 
+    const claimCount = getClaimCount(runtimeState.claimStatsByChannel?.[entry.name]);
+    if (claimCount !== null) {
+      const claimLabel = document.createElement("span");
+      claimLabel.className = "channel-claims";
+      claimLabel.textContent = `🎁${claimCount}`;
+      label.appendChild(claimLabel);
+    }
+
     const controls = document.createElement("div");
     controls.className = "channel-controls";
 
@@ -166,6 +174,11 @@ function formatWatchtime(session) {
   }
 
   return `${minutes}m`;
+}
+
+function getClaimCount(stats) {
+  const count = Number(stats?.count);
+  return Number.isInteger(count) && count >= 0 ? count : null;
 }
 
 function renderDebug(runtimeState, debugLog) {

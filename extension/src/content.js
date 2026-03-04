@@ -7,6 +7,12 @@ const UPTIME_SELECTOR_CANDIDATES = [
   "[data-test-selector='stream-time-value']",
   ".live-time"
 ];
+const CLAIM_BUTTON_SELECTOR_CANDIDATES = [
+  "[data-test-selector='community-points-summary'] [class*='claimable-bonus'] button",
+  "[data-test-selector='community-points-summary'] button",
+  "button[data-test-selector='community-points-summary']"
+];
+const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;
@@ -21,6 +27,9 @@ async function init() {
   window.setInterval(() => {
     void reportWatchUptime();
   }, 15000);
+  window.setInterval(() => {
+    void tryAutoClaimBonus();
+  }, 5000);
 }
 
 async function syncButton() {
@@ -28,6 +37,7 @@ async function syncButton() {
   if (channel === lastChannel) {
     placeButton();
     void reportWatchUptime();
+    void tryAutoClaimBonus();
     return;
   }
 
@@ -41,6 +51,7 @@ async function syncButton() {
 
   await injectButton(channel);
   void reportWatchUptime();
+  void tryAutoClaimBonus();
 }
 
 async function injectButton(channel) {
@@ -172,6 +183,45 @@ async function reportWatchUptime() {
   }
 }
 
+async function tryAutoClaimBonus() {
+  const channel = getChannelFromLocation(window.location.pathname);
+  if (!channel) {
+    return;
+  }
+
+  const claimButton = findClaimButton();
+  if (!claimButton || claimButton.disabled || claimButton.dataset[AUTO_CLAIM_MARKER] === "1") {
+    return;
+  }
+
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "claim:authorize",
+      channel
+    });
+  } catch (_error) {
+    return;
+  }
+
+  if (!response?.ok || !response.authorized) {
+    return;
+  }
+
+  claimButton.dataset[AUTO_CLAIM_MARKER] = "1";
+
+  try {
+    claimButton.click();
+    await chrome.runtime.sendMessage({
+      type: "claim:record",
+      channel
+    });
+  } catch (_error) {
+    delete claimButton.dataset[AUTO_CLAIM_MARKER];
+  }
+}
+
 function getChannelFromLocation(pathname) {
   const cleanPath = String(pathname || "").replace(/^\/+/, "");
   if (!cleanPath || cleanPath.includes("/")) {
@@ -218,6 +268,17 @@ function getVisibleStreamUptimeSeconds() {
   }
 
   return bestMatch;
+}
+
+function findClaimButton() {
+  for (const selector of CLAIM_BUTTON_SELECTOR_CANDIDATES) {
+    const button = document.querySelector(selector);
+    if (button instanceof HTMLButtonElement) {
+      return button;
+    }
+  }
+
+  return null;
 }
 
 function readCandidateTexts(selector) {

@@ -164,6 +164,12 @@
   white-space: nowrap;
 }
 
+.channel-claims {
+  color: #fbbf24;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .channel-controls {
   display: flex;
   gap: 4px;

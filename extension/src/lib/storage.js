@@ -10,7 +10,8 @@ export const DEFAULT_RUNTIME_STATE = {
   managedTabsByChannel: {},
   detachedChannels: [],
   watchSessionsByChannel: {},
-  broadcastSessionsByChannel: {}
+  broadcastSessionsByChannel: {},
+  claimStatsByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -65,13 +66,15 @@ export async function getRuntimeState() {
   const broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
     stored.broadcastSessionsByChannel
   );
+  const claimStatsByChannel = normalizeClaimStatsByChannel(stored.claimStatsByChannel);
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
     managedTabsByChannel,
     detachedChannels,
     watchSessionsByChannel,
-    broadcastSessionsByChannel
+    broadcastSessionsByChannel,
+    claimStatsByChannel
   };
 }
 
@@ -105,6 +108,10 @@ export async function setRuntimeState(partialState) {
     next.broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
       partialState.broadcastSessionsByChannel
     );
+  }
+
+  if (partialState.claimStatsByChannel !== undefined) {
+    next.claimStatsByChannel = normalizeClaimStatsByChannel(partialState.claimStatsByChannel);
   }
 
   await chrome.storage.local.set(next);
@@ -225,5 +232,28 @@ function normalizeBroadcastSession(value) {
     lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) && lastUptimeSeconds >= 0
       ? lastUptimeSeconds
       : 0
+  };
+}
+
+function normalizeClaimStatsByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, stats]) => [
+        String(channel || "").toLowerCase(),
+        normalizeClaimStats(stats)
+      ])
+      .filter(([channel, stats]) => channel && stats)
+  );
+}
+
+function normalizeClaimStats(value) {
+  const count = Math.max(0, Math.floor(Number(value?.count) || 0));
+  const lastClaimAt = Math.round(Number(value?.lastClaimAt));
+
+  return {
+    count,
+    lastClaimAt: Number.isFinite(lastClaimAt) && lastClaimAt > 0 ? lastClaimAt : 0
   };
 }
