@@ -139,7 +139,10 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
 
     const label = document.createElement("div");
     label.className = "channel-label";
+    const details = document.createElement("div");
+    details.className = "channel-details";
     const streamStatus = liveStatusByChannel[entry.name];
+    const isLive = streamStatus === "live";
 
     const status = document.createElement("span");
     status.className = "channel-status";
@@ -149,41 +152,47 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
     );
 
     const name = document.createElement("span");
+    name.className = "channel-name";
     name.textContent = `${index + 1}. ${entry.name}`;
 
     label.appendChild(status);
-    label.appendChild(name);
+    details.appendChild(name);
 
-    if (streamStatus === "live") {
+    if (isLive) {
+      const stats = document.createElement("div");
+      stats.className = "channel-stats";
       const claimElapsed = formatLastClaimDuration(runtimeState.claimStatsByChannel?.[entry.name]);
       const watchtimeLabel = document.createElement("span");
       watchtimeLabel.className = "channel-watchtime";
       watchtimeLabel.textContent = claimElapsed;
-      label.appendChild(watchtimeLabel);
-    }
+      stats.appendChild(watchtimeLabel);
 
-    const claimCount = getClaimCount(runtimeState.claimStatsByChannel?.[entry.name]);
-    if (claimCount !== null) {
-      const claimLabel = document.createElement("span");
-      claimLabel.className = "channel-claims";
-      claimLabel.textContent = `🎁 ${claimCount}`;
-      label.appendChild(claimLabel);
-    }
+      const claimCount = getClaimCount(runtimeState.claimStatsByChannel?.[entry.name]);
+      if (claimCount !== null) {
+        const claimLabel = document.createElement("span");
+        claimLabel.className = "channel-claims";
+        claimLabel.textContent = `🎁 ${claimCount}`;
+        stats.appendChild(claimLabel);
+      }
 
-    const streakLabelText = getWatchStreakLabel(runtimeState.watchStreakByChannel?.[entry.name]);
-    if (streakLabelText !== null) {
-      const streakLabel = document.createElement("span");
-      streakLabel.className = "channel-streak";
-      streakLabel.textContent = streakLabelText;
-      label.appendChild(streakLabel);
-    }
+      const streakLabelText = getWatchStreakLabel(runtimeState.watchStreakByChannel?.[entry.name]);
+      if (streakLabelText !== null) {
+        const streakLabel = document.createElement("span");
+        streakLabel.className = "channel-streak";
+        streakLabel.textContent = streakLabelText;
+        stats.appendChild(streakLabel);
+      }
 
-    if (isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[entry.name])) {
-      const claimReadyLabel = document.createElement("span");
-      claimReadyLabel.className = "channel-claim-ready";
-      claimReadyLabel.textContent = "🟡";
-      label.appendChild(claimReadyLabel);
+      if (isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[entry.name])) {
+        const claimReadyLabel = document.createElement("span");
+        claimReadyLabel.className = "channel-claim-ready";
+        claimReadyLabel.textContent = "🟡";
+        stats.appendChild(claimReadyLabel);
+      }
+
+      details.appendChild(stats);
     }
+    label.appendChild(details);
 
     const controls = document.createElement("div");
     controls.className = "channel-controls";
