@@ -207,7 +207,7 @@
   gap: 4px;
 }
 
-.move-button {
+.control-button {
   border: 0;
   background: transparent;
   color: #94a3b8;
@@ -217,15 +217,21 @@
   font-weight: 700;
   line-height: 1;
   cursor: pointer;
-}
-
-.move-button:hover:not(:disabled) {
+.control-button:hover:not(:disabled) {
   color: #f8fafc;
 }
 
-.move-button:disabled {
+.control-button:disabled {
   opacity: 0.25;
   cursor: default;
+}
+
+.delete-button {
+  font-size: 12px;
+}
+
+.delete-button:hover:not(:disabled) {
+  color: #fca5a5;
 }
 
 .empty-state {

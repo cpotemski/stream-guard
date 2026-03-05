@@ -120,29 +120,42 @@ async function injectButton(channel) {
     button.className = "tw-watch-guard-button";
     button.addEventListener("click", async () => {
       const activeChannel = getChannelFromLocation(window.location.pathname);
-      if (!activeChannel) {
+      if (!activeChannel || button.dataset.pending === "1") {
         return;
       }
 
-      const response = await chrome.runtime.sendMessage({
-        type: "channel:toggle",
-        channel: activeChannel
-      });
+      const wasImportant = button.getAttribute("aria-pressed") === "true";
+      const optimisticState = !wasImportant;
+      button.dataset.pending = "1";
+      renderButton(button, optimisticState);
 
-      if (!response?.ok) {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: "channel:toggle",
+          channel: activeChannel
+        });
+
+        if (!response?.ok) {
+          renderButton(button, wasImportant);
+          showToast("Aktion fehlgeschlagen");
+          return;
+        }
+
+        const isImportant = response.settings.importantChannels.some(
+          (entry) => entry.name === activeChannel
+        );
+        renderButton(button, isImportant);
+        showToast(
+          isImportant
+            ? "Zu wichtigen Channels hinzugefuegt"
+            : "Aus wichtigen Channels entfernt"
+        );
+      } catch (_error) {
+        renderButton(button, wasImportant);
         showToast("Aktion fehlgeschlagen");
-        return;
+      } finally {
+        delete button.dataset.pending;
       }
-
-      const isImportant = response.settings.importantChannels.some(
-        (entry) => entry.name === activeChannel
-      );
-      renderButton(button, isImportant);
-      showToast(
-        isImportant
-          ? "Zu wichtigen Channels hinzugefuegt"
-          : "Aus wichtigen Channels entfernt"
-      );
     });
   }
 

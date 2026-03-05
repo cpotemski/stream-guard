@@ -13,10 +13,13 @@ const DEBUG_LOG_KEY = "debugLog";
 const DEBUG_LOG_LIMIT = 40;
 const WATCH_GROUP_TITLE = "TW Watch";
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
   const settings = await getSettings();
   await setSettings(settings);
-  await setRuntimeState(await getRuntimeState());
+  const runtimeState = await setRuntimeState(await getRuntimeState());
+  if (details?.reason === "update") {
+    await rebindManagedTabsAfterUpdate(runtimeState.managedTabsByChannel);
+  }
   await syncAlarm(settings.autoManage);
   await updateBadge(settings);
 });
@@ -204,6 +207,33 @@ async function syncAlarm(enabled) {
     await chrome.alarms.create(ORCHESTRATOR_ALARM, {
       periodInMinutes: 1
     });
+  }
+}
+
+async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
+  const entries = Object.entries(managedTabsByChannel || {});
+  const targets = entries.filter(([, tabId]) => Number.isInteger(tabId));
+
+  for (const [channel, tabId] of targets) {
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: "watch:request-playback-state",
+        channel
+      });
+    } catch (_error) {
+      try {
+        await chrome.tabs.reload(tabId);
+        await appendDebugLog("rebind:tab-reloaded-after-update", {
+          channel,
+          tabId
+        });
+      } catch (_reloadError) {
+        await appendDebugLog("rebind:tab-reload-failed-after-update", {
+          channel,
+          tabId
+        });
+      }
+    }
   }
 }
 

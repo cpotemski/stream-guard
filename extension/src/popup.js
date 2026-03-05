@@ -15,6 +15,8 @@ let latestSnapshot = null;
 let refreshIntervalId = 0;
 let refreshWindowUntil = 0;
 let isRefreshing = false;
+let settingsUpdateInFlight = false;
+let watchToggleUpdateInFlight = false;
 
 void init();
 
@@ -33,10 +35,12 @@ function startRefreshWindow() {
 
 function bindEvents() {
   watchToggle.addEventListener("change", async () => {
-    await chrome.runtime.sendMessage({
-      type: watchToggle.checked ? "watch:start" : "watch:stop"
-    });
-    startRefreshWindow();
+    if (watchToggleUpdateInFlight) {
+      watchToggle.checked = Boolean(latestSnapshot?.settings?.autoManage);
+      return;
+    }
+
+    await updateAutoManage(watchToggle.checked);
   });
 
   downloadDebugButton.addEventListener("click", () => {
@@ -123,6 +127,7 @@ function renderCurrent() {
 
 function render(settings, runtimeState, debugLog, liveStatusByChannel) {
   watchToggle.checked = settings.autoManage;
+  watchToggle.disabled = watchToggleUpdateInFlight;
 
   channelList.textContent = "";
   const hasChannels = settings.importantChannels.length > 0;
@@ -183,17 +188,26 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
     const controls = document.createElement("div");
     controls.className = "channel-controls";
 
-    const upButton = createMoveButton("↑", index > 0, index, index - 1, settings);
+    const controlsEnabled = !settingsUpdateInFlight;
+    const upButton = createMoveButton(
+      "↑",
+      controlsEnabled && index > 0,
+      index,
+      index - 1,
+      settings
+    );
     const downButton = createMoveButton(
       "↓",
-      index < settings.importantChannels.length - 1,
+      controlsEnabled && index < settings.importantChannels.length - 1,
       index,
       index + 1,
       settings
     );
+    const deleteButton = createDeleteButton(index, settings, controlsEnabled);
 
     controls.appendChild(upButton);
     controls.appendChild(downButton);
+    controls.appendChild(deleteButton);
     item.appendChild(label);
     item.appendChild(controls);
     channelList.appendChild(item);
@@ -252,7 +266,7 @@ function getPlaybackState(playbackState) {
 function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "move-button";
+  button.className = "control-button";
   button.textContent = text;
   button.disabled = !enabled;
 
@@ -261,18 +275,151 @@ function createMoveButton(text, enabled, fromIndex, toIndex, settings) {
       const nextChannels = [...settings.importantChannels];
       const [moved] = nextChannels.splice(fromIndex, 1);
       nextChannels.splice(toIndex, 0, moved);
-
-      await chrome.runtime.sendMessage({
-        type: "settings:update",
-        settings: {
-          importantChannels: nextChannels
-        }
-      });
-      await refresh();
+      await updateImportantChannels(nextChannels);
     });
   }
 
   return button;
+}
+
+function createDeleteButton(index, settings, enabled) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "control-button delete-button";
+  button.textContent = "🗑";
+  button.setAttribute("aria-label", "Channel löschen");
+  button.title = "Channel löschen";
+  button.disabled = !enabled;
+
+  if (enabled) {
+    button.addEventListener("click", async () => {
+      const nextChannels = settings.importantChannels.filter((_, itemIndex) => itemIndex !== index);
+      await updateImportantChannels(nextChannels);
+    });
+  }
+
+  return button;
+}
+
+async function updateImportantChannels(channels) {
+  if (settingsUpdateInFlight) {
+    return;
+  }
+
+  const nextChannels = normalizeChannels(channels);
+  const previousChannels = latestSnapshot?.settings?.importantChannels || [];
+  settingsUpdateInFlight = true;
+
+  if (latestSnapshot) {
+    latestSnapshot = {
+      ...latestSnapshot,
+      settings: {
+        ...latestSnapshot.settings,
+        importantChannels: nextChannels
+      }
+    };
+    renderCurrent();
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "settings:update",
+      settings: {
+        importantChannels: nextChannels
+      }
+    });
+
+    if (!response?.ok) {
+      throw new Error("settings:update failed");
+    }
+
+    if (latestSnapshot) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        settings: response.settings
+      };
+    }
+
+    startRefreshWindow();
+    void refresh();
+  } catch (_error) {
+    if (latestSnapshot) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        settings: {
+          ...latestSnapshot.settings,
+          importantChannels: previousChannels
+        }
+      };
+    }
+  } finally {
+    settingsUpdateInFlight = false;
+    renderCurrent();
+  }
+}
+
+async function updateAutoManage(enabled) {
+  const previousAutoManage = Boolean(latestSnapshot?.settings?.autoManage);
+  watchToggleUpdateInFlight = true;
+
+  if (latestSnapshot) {
+    latestSnapshot = {
+      ...latestSnapshot,
+      settings: {
+        ...latestSnapshot.settings,
+        autoManage: enabled
+      }
+    };
+  }
+  renderCurrent();
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: enabled ? "watch:start" : "watch:stop"
+    });
+
+    if (!response?.ok) {
+      throw new Error("watch toggle failed");
+    }
+
+    if (latestSnapshot) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        settings: {
+          ...latestSnapshot.settings,
+          autoManage: Boolean(response.settings?.autoManage)
+        }
+      };
+    }
+
+    startRefreshWindow();
+    void refresh();
+  } catch (_error) {
+    if (latestSnapshot) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        settings: {
+          ...latestSnapshot.settings,
+          autoManage: previousAutoManage
+        }
+      };
+    }
+  } finally {
+    watchToggleUpdateInFlight = false;
+    renderCurrent();
+  }
+}
+
+function normalizeChannels(channels) {
+  return (Array.isArray(channels) ? channels : [])
+    .map((entry) => ({
+      name: String(entry?.name || "").toLowerCase()
+    }))
+    .filter((entry) => entry.name)
+    .map((entry, index) => ({
+      name: entry.name,
+      priority: index + 1
+    }));
 }
 
 function formatLastClaimDuration(claimStats) {
