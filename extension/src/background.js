@@ -12,11 +12,23 @@ const ORCHESTRATOR_ALARM = "orchestrator-tick";
 const DEBUG_LOG_KEY = "debugLog";
 const DEBUG_LOG_LIMIT = 40;
 const WATCH_GROUP_TITLE = "TW Watch";
+const STATE_CACHE_TTL_MS = 1500;
+const AUTH_CACHE_TTL_MS = 3000;
+const DEBUG_LOG_FLUSH_DELAY_MS = 800;
+
+let cachedSettings = null;
+let cachedSettingsExpiresAt = 0;
+let cachedRuntimeState = null;
+let cachedRuntimeStateExpiresAt = 0;
+const authorizationCache = new Map();
+let pendingDebugLogEntries = [];
+let debugLogFlushTimeoutId = 0;
+let debugLogFlushInFlight = null;
 
 chrome.runtime.onInstalled.addListener(async (details) => {
-  const settings = await getSettings();
-  await setSettings(settings);
-  const runtimeState = await setRuntimeState(await getRuntimeState());
+  const settings = await readSettingsFresh();
+  await writeSettings(settings);
+  const runtimeState = await writeRuntimeState(await readRuntimeStateFresh());
   if (details?.reason === "update") {
     await rebindManagedTabsAfterUpdate(runtimeState.managedTabsByChannel);
   }
@@ -25,7 +37,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  const settings = await getSettings();
+  const settings = await readSettingsCached();
   await syncAlarm(settings.autoManage);
   await updateBadge(settings);
 });
@@ -35,7 +47,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
 
-  const settings = await getSettings();
+  const settings = await readSettingsCached();
   if (settings.autoManage) {
     await reconcileManagedTabs(settings);
   }
@@ -58,12 +70,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender) {
   switch (message?.type) {
     case "settings:get": {
-      const settings = await getSettings();
+      const settings = await readSettingsCached();
       return { settings };
     }
     case "debug:get": {
-      const settings = await getSettings();
-      const runtimeState = await getRuntimeState();
+      const settings = await readSettingsCached();
+      const runtimeState = await readRuntimeStateCached();
       const debugLog = await getDebugLog();
       return { settings, runtimeState, debugLog };
     }
@@ -76,7 +88,7 @@ async function handleMessage(message, sender) {
       return { settings };
     }
     case "settings:update": {
-      const settings = await setSettings(message.settings || {});
+      const settings = await writeSettings(message.settings || {});
       await syncAlarm(settings.autoManage);
       if (settings.autoManage) {
         await reconcileManagedTabs(settings);
@@ -88,7 +100,7 @@ async function handleMessage(message, sender) {
       await clearDebugLog();
       await appendDebugLog("watch:start", {});
       await resetManagedWatchState();
-      const settings = await setSettings({ autoManage: true });
+      const settings = await writeSettings({ autoManage: true });
       const managedTabsByChannel = await reconcileManagedTabs(settings);
       await syncAlarm(true);
       await updateBadge(settings);
@@ -96,11 +108,11 @@ async function handleMessage(message, sender) {
     }
     case "watch:stop": {
       await appendDebugLog("watch:stop", {});
-      const runtimeState = await getRuntimeState();
+      const runtimeState = await readRuntimeStateCached();
       const closedTabs = await closeManagedWatchTabs(
         Object.values(runtimeState.managedTabsByChannel)
       );
-      await setRuntimeState({
+      await writeRuntimeState({
         managedTabsByChannel: {},
         detachedChannels: [],
         watchSessionsByChannel: {},
@@ -110,7 +122,7 @@ async function handleMessage(message, sender) {
         playbackStateByChannel: {},
         watchStreakByChannel: {}
       });
-      const settings = await setSettings({ autoManage: false });
+      const settings = await writeSettings({ autoManage: false });
       await syncAlarm(false);
       await updateBadge(settings);
       return { settings, closedTabs };
@@ -164,13 +176,13 @@ async function handleMessage(message, sender) {
         return {};
       }
 
-      const runtimeState = await getRuntimeState();
+      const runtimeState = await readRuntimeStateCached();
       const state = message?.state === "paused" ? "paused" : message?.state === "muted" ? "muted" : "ok";
       await appendDebugLog("playback-state:updated", {
         channel,
         state
       });
-      await setRuntimeState({
+      await writeRuntimeState({
         playbackStateByChannel: {
           ...runtimeState.playbackStateByChannel,
           [channel]: state
@@ -238,7 +250,7 @@ async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
 }
 
 async function reconcileManagedTabs(settings) {
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   const prioritizedChannels = settings.importantChannels.map((entry) => entry.name);
   const liveChannels = await selectLiveChannels(prioritizedChannels, settings.maxStreams);
   const desiredChannels = new Set(liveChannels);
@@ -418,7 +430,7 @@ async function reconcileManagedTabs(settings) {
     }
   }
 
-  await setRuntimeState({
+  await writeRuntimeState({
     managedTabsByChannel: nextManagedTabsByChannel,
     detachedChannels: [...nextDetachedChannels],
     watchSessionsByChannel: nextWatchSessionsByChannel,
@@ -535,7 +547,7 @@ function getChannelFromTab(tab) {
 }
 
 async function resetManagedWatchState() {
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   const trackedTabIds = new Set([
     ...runtimeState.managedTabs,
     ...Object.values(runtimeState.managedTabsByChannel)
@@ -546,7 +558,7 @@ async function resetManagedWatchState() {
     trackedTabIds: [...trackedTabIds]
   });
   await closeManagedWatchTabs([...trackedTabIds]);
-  await setRuntimeState({
+  await writeRuntimeState({
     managedTabs: [],
     managedTabsByChannel: {},
     detachedChannels: [],
@@ -574,7 +586,7 @@ async function handleWatchUptime(message, sender) {
     return;
   }
 
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   const managedTabId = runtimeState.managedTabsByChannel[channel];
   if (!managedTabId) {
     return;
@@ -603,7 +615,7 @@ async function handleWatchUptime(message, sender) {
       estimatedStartedAt,
       lastUptimeSeconds: uptimeSeconds
     };
-    await setRuntimeState({
+    await writeRuntimeState({
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel
     });
     await appendDebugLog("watch:uptime-init", {
@@ -647,7 +659,7 @@ async function handleWatchUptime(message, sender) {
     });
   }
 
-  await setRuntimeState({
+  await writeRuntimeState({
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     watchSessionsByChannel: nextWatchSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
@@ -694,38 +706,53 @@ async function canManageChannelForTab(channel, tabId) {
     return false;
   }
 
-  const settings = await getSettings();
+  const authorizationKey = `${channel}:${tabId}`;
+  const cachedAuthorization = authorizationCache.get(authorizationKey);
+  if (cachedAuthorization && cachedAuthorization.expiresAt > Date.now()) {
+    return cachedAuthorization.allowed;
+  }
+
+  const settings = await readSettingsCached();
   if (!settings.autoManage) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
   const isImportant = settings.importantChannels.some((entry) => entry.name === channel);
   if (!isImportant) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   if (runtimeState.managedTabsByChannel[channel] !== tabId) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 
   const tab = await getExistingTab(tabId);
   if (!tab) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 
   const tabChannel = getChannelFromTab(tab);
   if (tabChannel !== channel) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 
   if (!Number.isInteger(tab.groupId) || tab.groupId < 0) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 
   try {
     const group = await chrome.tabGroups.get(tab.groupId);
-    return group?.title === WATCH_GROUP_TITLE;
+    const allowed = group?.title === WATCH_GROUP_TITLE;
+    cacheAuthorizationResult(authorizationKey, allowed);
+    return allowed;
   } catch (_error) {
+    cacheAuthorizationResult(authorizationKey, false);
     return false;
   }
 }
@@ -742,7 +769,7 @@ async function recordClaim(message, sender) {
     return;
   }
 
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   if (runtimeState.managedTabsByChannel[channel] !== tabId) {
     return;
   }
@@ -772,7 +799,7 @@ async function recordClaim(message, sender) {
     }
   };
 
-  await setRuntimeState({
+  await writeRuntimeState({
     claimStatsByChannel: nextClaimStatsByChannel,
     claimAvailabilityByChannel: nextClaimAvailabilityByChannel
   });
@@ -794,7 +821,7 @@ async function updateClaimAvailability(message, sender) {
     return;
   }
 
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   if (runtimeState.managedTabsByChannel[channel] !== tabId) {
     return;
   }
@@ -813,7 +840,7 @@ async function updateClaimAvailability(message, sender) {
     }
   };
 
-  await setRuntimeState({
+  await writeRuntimeState({
     claimAvailabilityByChannel: nextClaimAvailabilityByChannel
   });
   await appendDebugLog(available ? "claim:available" : "claim:cleared", {
@@ -839,7 +866,7 @@ async function updateWatchStreak(message, sender) {
     return;
   }
 
-  const runtimeState = await getRuntimeState();
+  const runtimeState = await readRuntimeStateCached();
   if (runtimeState.managedTabsByChannel[channel] !== tabId) {
     return;
   }
@@ -859,7 +886,7 @@ async function updateWatchStreak(message, sender) {
     }
   };
 
-  await setRuntimeState({
+  await writeRuntimeState({
     watchStreakByChannel: nextWatchStreakByChannel
   });
   await appendDebugLog("streak:updated", {
@@ -869,26 +896,125 @@ async function updateWatchStreak(message, sender) {
 }
 
 async function appendDebugLog(event, details) {
-  const current = await chrome.storage.local.get({ [DEBUG_LOG_KEY]: [] });
-  const next = Array.isArray(current[DEBUG_LOG_KEY]) ? current[DEBUG_LOG_KEY] : [];
-  next.push({
+  pendingDebugLogEntries.push({
     timestamp: new Date().toISOString(),
     event,
     details
   });
-
-  await chrome.storage.local.set({
-    [DEBUG_LOG_KEY]: next.slice(-DEBUG_LOG_LIMIT)
-  });
+  scheduleDebugLogFlush(DEBUG_LOG_FLUSH_DELAY_MS);
 }
 
 async function clearDebugLog() {
+  pendingDebugLogEntries = [];
+  if (debugLogFlushTimeoutId) {
+    clearTimeout(debugLogFlushTimeoutId);
+    debugLogFlushTimeoutId = 0;
+  }
+  await flushDebugLogEntries();
   await chrome.storage.local.set({
     [DEBUG_LOG_KEY]: []
   });
 }
 
 async function getDebugLog() {
+  await flushDebugLogEntries();
   const stored = await chrome.storage.local.get({ [DEBUG_LOG_KEY]: [] });
   return Array.isArray(stored[DEBUG_LOG_KEY]) ? stored[DEBUG_LOG_KEY] : [];
+}
+
+function cacheAuthorizationResult(key, allowed) {
+  authorizationCache.set(key, {
+    allowed,
+    expiresAt: Date.now() + AUTH_CACHE_TTL_MS
+  });
+}
+
+function clearAuthorizationCache() {
+  authorizationCache.clear();
+}
+
+async function readSettingsFresh() {
+  const settings = await getSettings();
+  cachedSettings = settings;
+  cachedSettingsExpiresAt = Date.now() + STATE_CACHE_TTL_MS;
+  return settings;
+}
+
+async function readSettingsCached() {
+  if (cachedSettings && cachedSettingsExpiresAt > Date.now()) {
+    return cachedSettings;
+  }
+  return readSettingsFresh();
+}
+
+async function writeSettings(partialSettings) {
+  const settings = await setSettings(partialSettings);
+  cachedSettings = settings;
+  cachedSettingsExpiresAt = Date.now() + STATE_CACHE_TTL_MS;
+  clearAuthorizationCache();
+  return settings;
+}
+
+async function readRuntimeStateFresh() {
+  const runtimeState = await getRuntimeState();
+  cachedRuntimeState = runtimeState;
+  cachedRuntimeStateExpiresAt = Date.now() + STATE_CACHE_TTL_MS;
+  return runtimeState;
+}
+
+async function readRuntimeStateCached() {
+  if (cachedRuntimeState && cachedRuntimeStateExpiresAt > Date.now()) {
+    return cachedRuntimeState;
+  }
+  return readRuntimeStateFresh();
+}
+
+async function writeRuntimeState(partialState) {
+  const runtimeState = await setRuntimeState(partialState);
+  cachedRuntimeState = runtimeState;
+  cachedRuntimeStateExpiresAt = Date.now() + STATE_CACHE_TTL_MS;
+  clearAuthorizationCache();
+  return runtimeState;
+}
+
+function scheduleDebugLogFlush(delayMs) {
+  if (debugLogFlushTimeoutId || pendingDebugLogEntries.length === 0) {
+    return;
+  }
+
+  debugLogFlushTimeoutId = setTimeout(() => {
+    debugLogFlushTimeoutId = 0;
+    void flushDebugLogEntries();
+  }, delayMs);
+}
+
+async function flushDebugLogEntries() {
+  if (debugLogFlushInFlight) {
+    return debugLogFlushInFlight;
+  }
+
+  if (pendingDebugLogEntries.length === 0) {
+    return;
+  }
+
+  const entriesToPersist = pendingDebugLogEntries;
+  pendingDebugLogEntries = [];
+
+  debugLogFlushInFlight = (async () => {
+    const current = await chrome.storage.local.get({ [DEBUG_LOG_KEY]: [] });
+    const existing = Array.isArray(current[DEBUG_LOG_KEY]) ? current[DEBUG_LOG_KEY] : [];
+    const next = [...existing, ...entriesToPersist].slice(-DEBUG_LOG_LIMIT);
+    await chrome.storage.local.set({
+      [DEBUG_LOG_KEY]: next
+    });
+  })();
+
+  try {
+    await debugLogFlushInFlight;
+  } finally {
+    debugLogFlushInFlight = null;
+    if (pendingDebugLogEntries.length > 0) {
+      scheduleDebugLogFlush(100);
+    }
+  }
 }
