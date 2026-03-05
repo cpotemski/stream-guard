@@ -247,6 +247,8 @@ function normalizeBroadcastSessionsByChannel(value) {
 function normalizeBroadcastSession(value) {
   const estimatedStartedAt = Math.round(Number(value?.estimatedStartedAt));
   const lastUptimeSeconds = Math.round(Number(value?.lastUptimeSeconds));
+  const lastSeenAt = Math.round(Number(value?.lastSeenAt));
+  const streakIncreasedForStream = Boolean(value?.streakIncreasedForStream);
 
   if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
     return null;
@@ -256,7 +258,9 @@ function normalizeBroadcastSession(value) {
     estimatedStartedAt,
     lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) && lastUptimeSeconds >= 0
       ? lastUptimeSeconds
-      : 0
+      : 0,
+    lastSeenAt: Number.isFinite(lastSeenAt) && lastSeenAt > 0 ? lastSeenAt : 0,
+    streakIncreasedForStream
   };
 }
 

@@ -17,6 +17,7 @@ const STATE_CACHE_TTL_MS = 1500;
 const AUTH_CACHE_TTL_MS = 3000;
 const DEBUG_LOG_FLUSH_DELAY_MS = 800;
 const WAKE_GAP_THRESHOLD_MS = 180000;
+const BROADCAST_SESSION_RETENTION_MS = 900000;
 
 let cachedSettings = null;
 let cachedSettingsExpiresAt = 0;
@@ -258,6 +259,7 @@ async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
 }
 
 async function reconcileManagedTabs(settings) {
+  const now = Date.now();
   const runtimeState = await readRuntimeStateCached();
   const prioritizedChannels = settings.importantChannels.map((entry) => entry.name);
   const liveChannels = await selectLiveChannels(prioritizedChannels, settings.maxStreams);
@@ -279,35 +281,49 @@ async function reconcileManagedTabs(settings) {
 
   for (const [channel, tabId] of Object.entries(runtimeState.managedTabsByChannel)) {
     if (!desiredChannels.has(channel)) {
+      const keepRecentBroadcastSession = shouldRetainBroadcastSession(
+        nextBroadcastSessionsByChannel[channel],
+        now
+      );
       await appendDebugLog("reconcile:close-not-desired", {
         channel,
-        tabId
+        tabId,
+        keepRecentBroadcastSession
       });
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
-      delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
-      delete nextWatchStreakByChannel[channel];
+      if (!keepRecentBroadcastSession) {
+        delete nextBroadcastSessionsByChannel[channel];
+        delete nextWatchStreakByChannel[channel];
+      }
       nextDetachedChannels.delete(channel);
       continue;
     }
 
     const tab = await getExistingTab(tabId);
     if (!tab) {
+      const keepRecentBroadcastSession = shouldRetainBroadcastSession(
+        nextBroadcastSessionsByChannel[channel],
+        now
+      );
       await appendDebugLog("reconcile:drop-missing-tab", {
         channel,
-        tabId
+        tabId,
+        keepRecentBroadcastSession
       });
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
-      delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
-      delete nextWatchStreakByChannel[channel];
+      if (!keepRecentBroadcastSession) {
+        delete nextBroadcastSessionsByChannel[channel];
+        delete nextWatchStreakByChannel[channel];
+      }
       continue;
     }
 
@@ -323,21 +339,28 @@ async function reconcileManagedTabs(settings) {
     }
 
     if (currentChannel !== channel) {
+      const keepRecentBroadcastSession = shouldRetainBroadcastSession(
+        nextBroadcastSessionsByChannel[channel],
+        now
+      );
       await appendDebugLog("reconcile:close-detached", {
         channel,
         tabId,
         status: tab.status,
         currentChannel,
-        url: tab.pendingUrl || tab.url || null
+        url: tab.pendingUrl || tab.url || null,
+        keepRecentBroadcastSession
       });
       await closeManagedWatchTabs([tabId]);
       delete nextManagedTabsByChannel[channel];
       delete nextWatchSessionsByChannel[channel];
-      delete nextBroadcastSessionsByChannel[channel];
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
-      delete nextWatchStreakByChannel[channel];
+      if (!keepRecentBroadcastSession) {
+        delete nextBroadcastSessionsByChannel[channel];
+        delete nextWatchStreakByChannel[channel];
+      }
       nextDetachedChannels.add(channel);
       continue;
     }
@@ -378,7 +401,14 @@ async function reconcileManagedTabs(settings) {
       nextWatchSessionsByChannel[channel] = {
         startedAt: Date.now()
       };
-      delete nextBroadcastSessionsByChannel[channel];
+      const keepRecentBroadcastSession = shouldRetainBroadcastSession(
+        nextBroadcastSessionsByChannel[channel],
+        now
+      );
+      if (!keepRecentBroadcastSession) {
+        delete nextBroadcastSessionsByChannel[channel];
+        delete nextWatchStreakByChannel[channel];
+      }
       nextClaimStatsByChannel[channel] = {
         count: 0,
         lastClaimAt: Date.now()
@@ -389,7 +419,8 @@ async function reconcileManagedTabs(settings) {
       };
       await appendDebugLog("reconcile:open-tab", {
         channel,
-        tabId
+        tabId,
+        keepRecentBroadcastSession
       });
     }
   }
@@ -409,7 +440,8 @@ async function reconcileManagedTabs(settings) {
   }
 
   for (const channel of Object.keys(nextBroadcastSessionsByChannel)) {
-    if (!assignedChannels.has(channel)) {
+    if (!assignedChannels.has(channel)
+      && !shouldRetainBroadcastSession(nextBroadcastSessionsByChannel[channel], now)) {
       delete nextBroadcastSessionsByChannel[channel];
     }
   }
@@ -433,7 +465,11 @@ async function reconcileManagedTabs(settings) {
   }
 
   for (const channel of Object.keys(nextWatchStreakByChannel)) {
-    if (!assignedChannels.has(channel)) {
+    const hasRecentBroadcastSession = shouldRetainBroadcastSession(
+      nextBroadcastSessionsByChannel[channel],
+      now
+    );
+    if (!assignedChannels.has(channel) && !hasRecentBroadcastSession) {
       delete nextWatchStreakByChannel[channel];
     }
   }
@@ -649,7 +685,8 @@ async function handleWatchUptime(message, sender) {
     return;
   }
 
-  const estimatedStartedAt = Date.now() - (uptimeSeconds * 1000);
+  const now = Date.now();
+  const estimatedStartedAt = now - (uptimeSeconds * 1000);
   const currentBroadcast = runtimeState.broadcastSessionsByChannel[channel];
   const nextBroadcastSessionsByChannel = {
     ...runtimeState.broadcastSessionsByChannel
@@ -670,7 +707,9 @@ async function handleWatchUptime(message, sender) {
   if (!currentBroadcast) {
     nextBroadcastSessionsByChannel[channel] = {
       estimatedStartedAt,
-      lastUptimeSeconds: uptimeSeconds
+      lastUptimeSeconds: uptimeSeconds,
+      lastSeenAt: now,
+      streakIncreasedForStream: false
     };
     await writeRuntimeState({
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel
@@ -692,10 +731,18 @@ async function handleWatchUptime(message, sender) {
 
   nextBroadcastSessionsByChannel[channel] = {
     estimatedStartedAt,
-    lastUptimeSeconds: uptimeSeconds
+    lastUptimeSeconds: uptimeSeconds,
+    lastSeenAt: now,
+    streakIncreasedForStream: Boolean(currentBroadcast?.streakIncreasedForStream)
   };
 
   if (broadcastRestarted) {
+    nextBroadcastSessionsByChannel[channel] = {
+      estimatedStartedAt,
+      lastUptimeSeconds: uptimeSeconds,
+      lastSeenAt: now,
+      streakIncreasedForStream: false
+    };
     nextWatchSessionsByChannel[channel] = {
       startedAt: Date.now()
     };
@@ -746,6 +793,15 @@ function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUpt
   }
 
   return Math.abs(nextEstimatedStartedAt - previousEstimatedStartedAt) > 120000;
+}
+
+function shouldRetainBroadcastSession(session, now = Date.now()) {
+  const lastSeenAt = Number(session?.lastSeenAt);
+  if (!Number.isFinite(lastSeenAt) || lastSeenAt <= 0) {
+    return false;
+  }
+
+  return Math.max(0, now - lastSeenAt) <= BROADCAST_SESSION_RETENTION_MS;
 }
 
 async function canAutoClaim(message, sender) {
@@ -933,6 +989,8 @@ async function updateWatchStreak(message, sender) {
     return;
   }
   const increased = Number.isInteger(current?.value) && value > current.value;
+  const currentBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+  const reachedForCurrentStream = Boolean(currentBroadcast?.streakIncreasedForStream) || increased;
 
   const nextWatchStreakByChannel = {
     ...runtimeState.watchStreakByChannel,
@@ -942,13 +1000,25 @@ async function updateWatchStreak(message, sender) {
       seenAt: Date.now()
     }
   };
+  const nextBroadcastSessionsByChannel = {
+    ...runtimeState.broadcastSessionsByChannel
+  };
+
+  if (currentBroadcast) {
+    nextBroadcastSessionsByChannel[channel] = {
+      ...currentBroadcast,
+      streakIncreasedForStream: reachedForCurrentStream
+    };
+  }
 
   await writeRuntimeState({
-    watchStreakByChannel: nextWatchStreakByChannel
+    watchStreakByChannel: nextWatchStreakByChannel,
+    broadcastSessionsByChannel: nextBroadcastSessionsByChannel
   });
   await appendDebugLog("streak:updated", {
     channel,
-    value
+    value,
+    reachedForCurrentStream
   });
 }
 

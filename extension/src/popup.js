@@ -175,7 +175,10 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
         stats.appendChild(claimLabel);
       }
 
-      const streakLabelText = getWatchStreakLabel(runtimeState.watchStreakByChannel?.[entry.name]);
+      const streakLabelText = getWatchStreakLabel(
+        runtimeState.watchStreakByChannel?.[entry.name],
+        runtimeState.broadcastSessionsByChannel?.[entry.name]
+      );
       if (streakLabelText !== null) {
         const streakLabel = document.createElement("span");
         streakLabel.className = "channel-streak";
@@ -454,13 +457,15 @@ function getClaimCount(stats) {
   return Number.isInteger(count) && count >= 0 ? count : null;
 }
 
-function getWatchStreakLabel(streakState) {
+function getWatchStreakLabel(streakState, broadcastState) {
   const value = Number(streakState?.value);
+  const reachedForCurrentStream = Boolean(broadcastState?.streakIncreasedForStream);
+
   if (!Number.isInteger(value) || value < 0) {
-    return null;
+    return reachedForCurrentStream ? "🔥 ✅" : null;
   }
 
-  return streakState?.increased ? `🔥 ${value} ✅` : `🔥 ${value}`;
+  return reachedForCurrentStream ? `🔥 ${value} ✅` : `🔥 ${value}`;
 }
 
 function isClaimAvailable(state) {
