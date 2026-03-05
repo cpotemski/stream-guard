@@ -5,20 +5,19 @@ permalink: decisions/memory-hygiene-regel
 tags:
 - decision
 - memory
-- mvp
+- v1
 ---
 
 # Memory Hygiene Regel
 
 ## Entscheidung
-Fuer das Twitch Watch Guard MVP wird keine separate automatische Memory-Cleanup- oder Compression-Mechanik eingefuehrt.
-Stattdessen gilt eine leichte manuelle Memory-Hygiene-Regel an echten Meilensteinen oder bei erkennbarer Unuebersicht.
+Fuer die v1 gilt eine manuelle Memory-Hygiene mit klarem Lifecycle (`active|historical|obsolete`).
 
 ## Regel
-- Nur projektwertige Informationen bleiben im Memory: verbindliche Entscheidungen, geaenderte Annahmen, umgesetzte Meilensteine, bekannte offene MVP-Risiken.
-- Doppelte oder ueberholte Notizen werden bei Bedarf zusammengefuehrt oder klar als ersetzt markiert.
-- Reine Zwischenstaende und irrelevantes Arbeitsrauschen werden nicht nachdokumentiert.
-- Memory-Hygiene erfolgt nur anlassbezogen, nicht als eigener regelmaessiger Automations-Mechanismus.
+- Nur projektwertige Informationen bleiben im aktiven Memory: verbindliche Entscheidungen, geaenderte Annahmen, umgesetzte Meilensteine, bekannte offene v1-Risiken.
+- Notizen nutzen den Lifecycle-Status `active|historical|obsolete` (Frontmatter `status` oder inferiert aus dem Inhalt).
+- `historical` wird nach `.memory/archive/` verschoben.
+- `obsolete` wird geloescht.
 
 ## Begruendung
-Das erfuellt den Dokumentationszweck mit minimalem Aufwand und bleibt im Einklang mit YAGNI und dem MVP-Fokus. Ein separater Cleanup-Mechanismus wird erst eingefuehrt, wenn Memory-Unordnung zu einem realen Problem wird.
+Das reduziert Noise dauerhaft, ohne den aktiven Entscheidungs- und Fortschrittskontext zu verlieren. Die Loesung bleibt YAGNI-konform, weil sie ohne zusaetzliche Automatisierungsinfrastruktur auskommt.

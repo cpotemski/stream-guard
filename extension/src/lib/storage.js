@@ -1,14 +1,12 @@
 export const DEFAULT_SETTINGS = {
   autoManage: false,
   maxStreams: 3,
-  openMode: "silent",
   importantChannels: []
 };
 
 export const DEFAULT_RUNTIME_STATE = {
-  managedTabs: [],
   managedTabsByChannel: {},
-  detachedChannels: [],
+  detachedUntilByChannel: {},
   watchSessionsByChannel: {},
   broadcastSessionsByChannel: {},
   claimStatsByChannel: {},
@@ -33,7 +31,6 @@ export async function getSettings() {
   return {
     autoManage: Boolean(stored.autoManage),
     maxStreams: clampMaxStreams(stored.maxStreams),
-    openMode: stored.openMode === "always" ? "always" : "silent",
     importantChannels: channels
       .map((entry, index) => normalizeChannel(entry, index + 1))
       .filter((entry) => entry.name)
@@ -62,9 +59,8 @@ export async function setSettings(partialSettings) {
 
 export async function getRuntimeState() {
   const stored = await chrome.storage.local.get(DEFAULT_RUNTIME_STATE);
-  const managedTabs = Array.isArray(stored.managedTabs) ? stored.managedTabs : [];
   const managedTabsByChannel = normalizeManagedTabsByChannel(stored.managedTabsByChannel);
-  const detachedChannels = normalizeChannelList(stored.detachedChannels);
+  const detachedUntilByChannel = normalizeDetachedUntilByChannel(stored.detachedUntilByChannel);
   const watchSessionsByChannel = normalizeWatchSessionsByChannel(stored.watchSessionsByChannel);
   const broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
     stored.broadcastSessionsByChannel
@@ -77,9 +73,8 @@ export async function getRuntimeState() {
   const watchStreakByChannel = normalizeWatchStreakByChannel(stored.watchStreakByChannel);
 
   return {
-    managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
     managedTabsByChannel,
-    detachedChannels,
+    detachedUntilByChannel,
     watchSessionsByChannel,
     broadcastSessionsByChannel,
     claimStatsByChannel,
@@ -96,19 +91,12 @@ export async function setRuntimeState(partialState) {
     ...partialState
   };
 
-  if (partialState.managedTabs !== undefined) {
-    next.managedTabs = Array.isArray(partialState.managedTabs)
-      ? partialState.managedTabs.filter((tabId) => Number.isInteger(tabId))
-      : [];
-  }
-
   if (partialState.managedTabsByChannel !== undefined) {
     next.managedTabsByChannel = normalizeManagedTabsByChannel(partialState.managedTabsByChannel);
-    next.managedTabs = Object.values(next.managedTabsByChannel);
   }
 
-  if (partialState.detachedChannels !== undefined) {
-    next.detachedChannels = normalizeChannelList(partialState.detachedChannels);
+  if (partialState.detachedUntilByChannel !== undefined) {
+    next.detachedUntilByChannel = normalizeDetachedUntilByChannel(partialState.detachedUntilByChannel);
   }
 
   if (partialState.watchSessionsByChannel !== undefined) {
@@ -202,10 +190,21 @@ function normalizeManagedTabsByChannel(value) {
   );
 }
 
-function normalizeChannelList(value) {
-  return [...new Set((Array.isArray(value) ? value : [])
-    .map((channel) => String(channel || "").toLowerCase())
-    .filter(Boolean))];
+function normalizeDetachedUntilByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, detachedUntil]) => [
+        String(channel || "").toLowerCase(),
+        Math.round(Number(detachedUntil))
+      ])
+      .filter(([channel, detachedUntil]) => (
+        channel
+        && Number.isFinite(detachedUntil)
+        && detachedUntil > 0
+      ))
+  );
 }
 
 function normalizeWatchSessionsByChannel(value) {

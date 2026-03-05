@@ -127,26 +127,6 @@
   font-weight: 700;
 }
 
-.debug-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.debug-button {
-  border: 1px solid #475569;
-  background: #334155;
-  color: #e2e8f0;
-  border-radius: 8px;
-  font: 500 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  padding: 5px 8px;
-  cursor: pointer;
-}
-
-.debug-button:hover {
-  background: #475569;
-}
 
 .channel-list {
   margin: 0;
@@ -263,17 +243,4 @@
 .empty-state {
   margin: 0;
   color: #cbd5e1;
-}
-
-.debug-output {
-  margin: 0;
-  max-height: 180px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #0b1120;
-  color: #d1d5db;
-  padding: 8px;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
 }

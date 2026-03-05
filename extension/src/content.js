@@ -27,6 +27,7 @@ const PLAYBACK_STATE_EVENTS = [
   "playing",
   "waiting"
 ];
+const TAB_LOG_PREFIX = "[TW Watch Guard]";
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;
@@ -161,7 +162,8 @@ async function injectButton(channel) {
             ? "Zu wichtigen Channels hinzugefuegt"
             : "Aus wichtigen Channels entfernt"
         );
-      } catch (_error) {
+      } catch (error) {
+        logTabError("channel:toggle failed", error);
         renderButton(button, wasImportant);
         showToast("Aktion fehlgeschlagen");
       } finally {
@@ -172,7 +174,13 @@ async function injectButton(channel) {
 
   placeButton(button);
 
-  const response = await chrome.runtime.sendMessage({ type: "settings:get" });
+  let response = null;
+  try {
+    response = await chrome.runtime.sendMessage({ type: "settings:get" });
+  } catch (error) {
+    logTabError("settings:get failed in injectButton", error);
+  }
+
   const isImportant = response?.ok
     ? response.settings.importantChannels.some((entry) => entry.name === channel)
     : false;
@@ -345,7 +353,8 @@ async function tryAutoClaimBonus() {
       channel
     });
     lastClaimAvailabilityKey = `${channel}:0`;
-  } catch (_error) {
+  } catch (error) {
+    logTabError("claim:record failed after claim click", error);
     delete claimButton.dataset[AUTO_CLAIM_MARKER];
   }
 }
@@ -464,7 +473,8 @@ async function ensureManagedPlaybackState() {
         type: "watch:playback-resumed",
         channel
       });
-    } catch (_error) {
+    } catch (error) {
+      logTabError("video.play() failed while resuming playback", error);
       // Playback resume can still be blocked by page/player state.
     }
   }
@@ -485,7 +495,8 @@ async function ensureManagedPlaybackState() {
       type: "watch:playback-corrected",
       channel
     });
-  } catch (_error) {
+  } catch (error) {
+    logTabError("watch:playback-corrected message failed", error);
     // Ignore transient extension reload gaps.
     await reportManagedPlaybackStateForVideo(channel, video);
     return;
@@ -1080,4 +1091,13 @@ function parseDurationToken(value) {
   }
 
   return null;
+}
+
+function logTabError(context, error) {
+  console.error(
+    TAB_LOG_PREFIX,
+    context,
+    error instanceof Error ? error.message : String(error),
+    error
+  );
 }

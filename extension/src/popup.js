@@ -3,13 +3,10 @@ import { getChannelsLiveStatus } from "./lib/liveStatus.js";
 const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
-const debugOutput = document.getElementById("debug-output");
-const downloadDebugButton = document.getElementById("download-debug");
 const QUICK_POLL_INTERVAL_MS = 5000;
 const QUICK_POLL_WINDOW_MS = 30000;
 const SLOW_POLL_INTERVAL_MS = 60000;
 const RENDER_INTERVAL_MS = 1000;
-const DEBUG_PREVIEW_EVENT_COUNT = 10;
 
 let latestSnapshot = null;
 let refreshIntervalId = 0;
@@ -42,34 +39,6 @@ function bindEvents() {
 
     await updateAutoManage(watchToggle.checked);
   });
-
-  downloadDebugButton.addEventListener("click", () => {
-    if (!latestSnapshot) {
-      return;
-    }
-
-    const payload = {
-      capturedAt: new Date().toISOString(),
-      settings: latestSnapshot.settings,
-      runtimeState: latestSnapshot.runtimeState,
-      debugLog: latestSnapshot.debugLog,
-      liveStatusByChannel: latestSnapshot.liveStatusByChannel
-    };
-
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const now = new Date();
-    const timestamp = now.toISOString().replace(/[:.]/g, "-");
-
-    link.href = url;
-    link.download = `twitch-watch-guard-debug-${timestamp}.json`;
-    link.style.display = "none";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  });
 }
 
 async function refresh() {
@@ -79,7 +48,7 @@ async function refresh() {
 
   isRefreshing = true;
   try {
-    const response = await chrome.runtime.sendMessage({ type: "debug:get" });
+    const response = await chrome.runtime.sendMessage({ type: "status:get" });
     if (!response?.ok) {
       return;
     }
@@ -91,7 +60,6 @@ async function refresh() {
     latestSnapshot = {
       settings: response.settings,
       runtimeState: response.runtimeState,
-      debugLog: response.debugLog,
       liveStatusByChannel
     };
 
@@ -120,12 +88,11 @@ function renderCurrent() {
   render(
     latestSnapshot.settings,
     latestSnapshot.runtimeState,
-    latestSnapshot.debugLog,
     latestSnapshot.liveStatusByChannel
   );
 }
 
-function render(settings, runtimeState, debugLog, liveStatusByChannel) {
+function render(settings, runtimeState, liveStatusByChannel) {
   watchToggle.checked = settings.autoManage;
   watchToggle.disabled = watchToggleUpdateInFlight;
 
@@ -224,8 +191,6 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
     item.appendChild(controls);
     channelList.appendChild(item);
   });
-
-  renderDebug(runtimeState, debugLog);
 }
 
 function getChannelIndicator(status, playbackState) {
@@ -470,77 +435,4 @@ function getWatchStreakLabel(streakState, broadcastState) {
 
 function isClaimAvailable(state) {
   return Boolean(state?.available);
-}
-
-function renderDebug(runtimeState, debugLog) {
-  const lines = [];
-  const managedChannels = Object.keys(runtimeState.managedTabsByChannel || {});
-  const playback = runtimeState.playbackStateByChannel || {};
-
-  lines.push("Status-Übersicht:");
-  lines.push(`Live-Sessions: ${Object.keys(runtimeState.broadcastSessionsByChannel || {}).length}`);
-  lines.push(`Managed Tabs: ${runtimeState.managedTabs?.length || 0}`);
-  lines.push(`Überwachte Kanäle: ${managedChannels.length}`);
-  lines.push(`Detached: ${(runtimeState.detachedChannels || []).length}`);
-
-  lines.push("Playback:");
-  if (managedChannels.length === 0) {
-    lines.push("  - keine verwalteten Kanäle");
-  } else {
-    managedChannels.forEach((channel) => {
-      const state = playback[channel] || "unknown";
-      lines.push(`  - ${channel}: ${state}`);
-    });
-  }
-
-  lines.push("Recent Events:");
-  const tail = (debugLog || []).slice(-DEBUG_PREVIEW_EVENT_COUNT);
-  if (tail.length === 0) {
-    lines.push("  - keine Events");
-  } else {
-    tail.forEach((entry) => {
-      if (!entry) {
-        return;
-      }
-
-      const ts = entry.timestamp || "";
-      const eventTime = ts ? new Date(ts).toLocaleTimeString("de-DE", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      }) : "??:??:??";
-      const event = entry.event || "unknown";
-      const details = summarizeEventDetails(entry.details);
-      lines.push(`  [${eventTime}] ${event}${details ? ` ${details}` : ""}`);
-    });
-  }
-
-  debugOutput.textContent = lines.join("\n");
-}
-
-function summarizeEventDetails(details) {
-  if (!details || typeof details !== "object") {
-    return "";
-  }
-
-  const channel = details.channel || details.stateChannel;
-  const state = details.state;
-  const tabId = details.tabId;
-
-  if (!channel && !state && tabId === undefined) {
-    return "";
-  }
-
-  const chunks = [];
-  if (channel) {
-    chunks.push(`channel=${channel}`);
-  }
-  if (state) {
-    chunks.push(`state=${state}`);
-  }
-  if (typeof tabId === "number") {
-    chunks.push(`tab=${tabId}`);
-  }
-
-  return `(${chunks.join(", ")})`;
 }
