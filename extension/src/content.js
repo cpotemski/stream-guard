@@ -8,6 +8,10 @@ const UPTIME_SELECTOR_CANDIDATES = [
   ".live-time"
 ];
 const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
+const WATCH_STREAK_POLL_INTERVAL_MS = 300000;
+const WATCH_STREAK_MENU_TOGGLE_DELAY_MS = 160;
+const WATCH_STREAK_ICON_PATH_FRAGMENT = "M5.295 8.05 10 2l3 4 2-3 3.8 5.067";
+const WATCH_STREAK_CHEVRON_PATH_FRAGMENT = "M13.793 12.207 8 6.414";
 const FAST_PLAYBACK_POLL_INTERVAL_MS = 5000;
 const SLOW_PLAYBACK_POLL_INTERVAL_MS = 60000;
 const FAST_PLAYBACK_REPORT_TICKS = 6;
@@ -30,6 +34,9 @@ let fastPlaybackPollsLeft = 0;
 let playbackStateVideo = null;
 let playbackStateDebounceTimeoutId = 0;
 let requestedPlaybackRefresh = 0;
+let requestedStreakRefresh = 0;
+let lastWatchStreakReportKey = null;
+let streakProbeInFlight = false;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "watch:request-playback-state") {
@@ -37,6 +44,15 @@ chrome.runtime.onMessage.addListener((message) => {
     requestedPlaybackRefresh = window.setTimeout(() => {
       requestedPlaybackRefresh = 0;
       void ensureManagedPlaybackState();
+    }, 0);
+    return;
+  }
+
+  if (message?.type === "watch:request-streak") {
+    window.clearTimeout(requestedStreakRefresh);
+    requestedStreakRefresh = window.setTimeout(() => {
+      requestedStreakRefresh = 0;
+      void reportWatchStreak();
     }, 0);
   }
 });
@@ -57,6 +73,9 @@ async function init() {
   window.setInterval(() => {
     void ensureManagedPlaybackState();
   }, 5000);
+  window.setInterval(() => {
+    void reportWatchStreak();
+  }, WATCH_STREAK_POLL_INTERVAL_MS);
   startPlaybackStatePolling();
 }
 
@@ -75,6 +94,7 @@ async function syncButton() {
   lastReportedUptimeKey = null;
   lastClaimAvailabilityKey = null;
   lastPlaybackStateKey = null;
+  lastWatchStreakReportKey = null;
 
   if (!channel) {
     detachPlaybackStateWatchers();
@@ -88,6 +108,7 @@ async function syncButton() {
   void reportWatchUptime();
   void tryAutoClaimBonus();
   void ensureManagedPlaybackState();
+  void reportWatchStreak();
 }
 
 async function injectButton(channel) {
@@ -305,6 +326,81 @@ async function tryAutoClaimBonus() {
   }
 }
 
+async function reportWatchStreak() {
+  if (streakProbeInFlight) {
+    return;
+  }
+
+  const channel = getChannelFromLocation(window.location.pathname);
+  if (!channel) {
+    return;
+  }
+
+  let authorization;
+
+  try {
+    authorization = await chrome.runtime.sendMessage({
+      type: "watch:authorize",
+      channel
+    });
+  } catch (_error) {
+    return;
+  }
+
+  if (!authorization?.ok || !authorization.authorized) {
+    return;
+  }
+
+  const summary = findCommunityPointsSummaryRoot();
+  const summaryToggleButton = findCommunityPointsSummaryToggleButton(summary);
+  if (!summaryToggleButton) {
+    return;
+  }
+
+  streakProbeInFlight = true;
+
+  let streakValue = null;
+  const wasOpenBefore = Boolean(findRewardCenterDialog());
+
+  try {
+    if (!wasOpenBefore) {
+      summaryToggleButton.click();
+      await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+    }
+
+    const dialog = findRewardCenterDialog();
+    const card = findWatchStreakCard(dialog);
+    streakValue = extractWatchStreakValueFromCard(card);
+  } finally {
+    const isOpenAfterProbe = Boolean(findRewardCenterDialog());
+    if (isOpenAfterProbe && summaryToggleButton.isConnected) {
+      summaryToggleButton.click();
+      await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+    }
+    streakProbeInFlight = false;
+  }
+
+  if (!Number.isInteger(streakValue) || streakValue < 0) {
+    return;
+  }
+
+  const dedupeKey = `${channel}:${streakValue}`;
+  if (dedupeKey === lastWatchStreakReportKey) {
+    return;
+  }
+  lastWatchStreakReportKey = dedupeKey;
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "streak:report",
+      channel,
+      value: streakValue
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
+}
+
 async function ensureManagedPlaybackState() {
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
@@ -477,7 +573,7 @@ function getVisibleStreamUptimeSeconds() {
 }
 
 function findClaimButton() {
-  const summary = document.querySelector("[data-test-selector='community-points-summary']");
+  const summary = findCommunityPointsSummaryRoot();
   if (!summary) {
     return null;
   }
@@ -495,6 +591,197 @@ function findClaimButton() {
   }
 
   return null;
+}
+
+function findCommunityPointsSummaryRoot() {
+  const summary = document.querySelector("div[data-test-selector='community-points-summary']");
+  return summary instanceof HTMLElement ? summary : null;
+}
+
+function findCommunityPointsSummaryToggleButton(summary) {
+  if (!(summary instanceof HTMLElement)) {
+    return null;
+  }
+
+  const buttons = [...summary.querySelectorAll("button:not([disabled])")]
+    .filter((button) => button instanceof HTMLButtonElement);
+
+  if (buttons.length === 0) {
+    return null;
+  }
+
+  const preferred = buttons.find(
+    (button) => button.querySelector("[data-test-selector='copo-balance-string']")
+  );
+  return preferred || buttons[0];
+}
+
+function findRewardCenterDialog() {
+  const primary = document.querySelector(
+    "[role='dialog'][aria-labelledby='channel-points-reward-center-header']"
+  );
+  if (primary instanceof HTMLElement) {
+    return primary;
+  }
+
+  const dialogs = document.querySelectorAll("[role='dialog']");
+  for (const dialog of dialogs) {
+    if (!(dialog instanceof HTMLElement)) {
+      continue;
+    }
+    if (dialog.querySelector("#channel-points-reward-center-body")) {
+      return dialog;
+    }
+  }
+
+  return null;
+}
+
+function findWatchStreakCard(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return null;
+  }
+
+  const iconAnchors = findWatchStreakIconAnchors(dialog);
+  for (const iconAnchor of iconAnchors) {
+    const card = findClosestWatchStreakCard(iconAnchor, true);
+    if (card) {
+      return card;
+    }
+  }
+
+  const progressBars = dialog.querySelectorAll("[role='progressbar'][aria-valuemin][aria-valuemax]");
+  for (const progressBar of progressBars) {
+    const card = findClosestWatchStreakCard(progressBar, false);
+    if (card) {
+      return card;
+    }
+  }
+
+  return null;
+}
+
+function findWatchStreakIconAnchors(root) {
+  const normalizedFragment = normalizePathData(WATCH_STREAK_ICON_PATH_FRAGMENT);
+  const anchors = [];
+  const paths = root.querySelectorAll("svg path[d]");
+
+  for (const path of paths) {
+    if (!(path instanceof SVGPathElement)) {
+      continue;
+    }
+
+    const pathData = normalizePathData(path.getAttribute("d"));
+    if (pathData && pathData.includes(normalizedFragment)) {
+      anchors.push(path);
+    }
+  }
+
+  return anchors;
+}
+
+function findClosestWatchStreakCard(anchor, requireIconAnchor) {
+  let current = anchor instanceof Element ? anchor.parentElement : null;
+
+  while (current && current !== document.body) {
+    const hasProgressBar = Boolean(
+      current.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]")
+    );
+    const hasChevronButton = hasWatchStreakChevronButton(current);
+    const hasIconAnchor = !requireIconAnchor || findWatchStreakIconAnchors(current).length > 0;
+
+    if (hasProgressBar && hasChevronButton && hasIconAnchor) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+
+  return null;
+}
+
+function hasWatchStreakChevronButton(root) {
+  const normalizedFragment = normalizePathData(WATCH_STREAK_CHEVRON_PATH_FRAGMENT);
+  const buttons = root.querySelectorAll("button");
+
+  for (const button of buttons) {
+    if (!(button instanceof HTMLButtonElement)) {
+      continue;
+    }
+
+    const paths = button.querySelectorAll("svg path[d]");
+    for (const path of paths) {
+      if (!(path instanceof SVGPathElement)) {
+        continue;
+      }
+
+      const pathData = normalizePathData(path.getAttribute("d"));
+      if (pathData && pathData.includes(normalizedFragment)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function extractWatchStreakValueFromCard(card) {
+  if (!(card instanceof HTMLElement)) {
+    return null;
+  }
+
+  const iconAnchors = findWatchStreakIconAnchors(card);
+  for (const iconAnchor of iconAnchors) {
+    let cursor = iconAnchor.parentElement;
+    let depth = 0;
+
+    while (cursor && cursor !== card && depth < 5) {
+      const candidateValue = extractFirstInteger(cursor.textContent);
+      if (candidateValue !== null) {
+        return candidateValue;
+      }
+
+      cursor = cursor.parentElement;
+      depth += 1;
+    }
+  }
+
+  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
+  const headerRegion = progressBar instanceof Element
+    ? progressBar.closest("div")?.previousElementSibling
+    : null;
+  if (headerRegion instanceof HTMLElement) {
+    const headerValue = extractFirstInteger(headerRegion.textContent);
+    if (headerValue !== null) {
+      return headerValue;
+    }
+  }
+
+  return extractFirstInteger(card.textContent);
+}
+
+function extractFirstInteger(text) {
+  const source = String(text || "");
+  const matches = source.match(/\d{1,4}/g);
+  if (!matches) {
+    return null;
+  }
+
+  for (const token of matches) {
+    const value = Number.parseInt(token, 10);
+    if (Number.isInteger(value) && value >= 0) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function normalizePathData(pathData) {
+  return String(pathData || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function findPlayerVideo() {
@@ -588,6 +875,13 @@ async function reportClaimAvailability(channel, available) {
   } catch (_error) {
     // Ignore transient extension reload gaps.
   }
+}
+
+function wait(ms) {
+  const timeout = Math.max(0, Math.floor(Number(ms) || 0));
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, timeout);
+  });
 }
 
 function readCandidateTexts(selector) {

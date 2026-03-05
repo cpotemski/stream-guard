@@ -191,6 +191,12 @@
   white-space: nowrap;
 }
 
+.channel-streak {
+  color: #f97316;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .channel-claim-ready {
   font-size: 10px;
   white-space: nowrap;

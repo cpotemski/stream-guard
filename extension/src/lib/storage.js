@@ -13,7 +13,8 @@ export const DEFAULT_RUNTIME_STATE = {
   broadcastSessionsByChannel: {},
   claimStatsByChannel: {},
   claimAvailabilityByChannel: {},
-  playbackStateByChannel: {}
+  playbackStateByChannel: {},
+  watchStreakByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -73,6 +74,7 @@ export async function getRuntimeState() {
     stored.claimAvailabilityByChannel
   );
   const playbackStateByChannel = normalizePlaybackStateByChannel(stored.playbackStateByChannel);
+  const watchStreakByChannel = normalizeWatchStreakByChannel(stored.watchStreakByChannel);
 
   return {
     managedTabs: managedTabs.filter((tabId) => Number.isInteger(tabId)),
@@ -82,7 +84,8 @@ export async function getRuntimeState() {
     broadcastSessionsByChannel,
     claimStatsByChannel,
     claimAvailabilityByChannel,
-    playbackStateByChannel
+    playbackStateByChannel,
+    watchStreakByChannel
   };
 }
 
@@ -130,6 +133,10 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.playbackStateByChannel !== undefined) {
     next.playbackStateByChannel = normalizePlaybackStateByChannel(partialState.playbackStateByChannel);
+  }
+
+  if (partialState.watchStreakByChannel !== undefined) {
+    next.watchStreakByChannel = normalizeWatchStreakByChannel(partialState.watchStreakByChannel);
   }
 
   await chrome.storage.local.set(next);
@@ -318,4 +325,32 @@ function normalizePlaybackState(value) {
     return state;
   }
   return null;
+}
+
+function normalizeWatchStreakByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, rawStreak]) => [
+        String(channel || "").toLowerCase(),
+        normalizeWatchStreak(rawStreak)
+      ])
+      .filter(([channel, streak]) => channel && streak)
+  );
+}
+
+function normalizeWatchStreak(value) {
+  const streakValue = Math.floor(Number(value?.value));
+  if (!Number.isInteger(streakValue) || streakValue < 0) {
+    return null;
+  }
+
+  const seenAt = Math.round(Number(value?.seenAt));
+  const increased = Boolean(value?.increased);
+  return {
+    value: streakValue,
+    increased,
+    seenAt: Number.isFinite(seenAt) && seenAt > 0 ? seenAt : 0
+  };
 }

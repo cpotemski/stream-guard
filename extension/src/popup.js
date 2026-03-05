@@ -165,6 +165,14 @@ function render(settings, runtimeState, debugLog, liveStatusByChannel) {
       label.appendChild(claimLabel);
     }
 
+    const streakLabelText = getWatchStreakLabel(runtimeState.watchStreakByChannel?.[entry.name]);
+    if (streakLabelText !== null) {
+      const streakLabel = document.createElement("span");
+      streakLabel.className = "channel-streak";
+      streakLabel.textContent = streakLabelText;
+      label.appendChild(streakLabel);
+    }
+
     if (isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[entry.name])) {
       const claimReadyLabel = document.createElement("span");
       claimReadyLabel.className = "channel-claim-ready";
@@ -288,6 +296,15 @@ function formatLastClaimDuration(claimStats) {
 function getClaimCount(stats) {
   const count = Number(stats?.count);
   return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function getWatchStreakLabel(streakState) {
+  const value = Number(streakState?.value);
+  if (!Number.isInteger(value) || value < 0) {
+    return null;
+  }
+
+  return streakState?.increased ? `🔥 ${value} ✅` : `🔥 ${value}`;
 }
 
 function isClaimAvailable(state) {

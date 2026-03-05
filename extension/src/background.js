@@ -11,6 +11,7 @@ import { closeManagedWatchTabs, openWatchTab } from "./lib/tabManager.js";
 const ORCHESTRATOR_ALARM = "orchestrator-tick";
 const DEBUG_LOG_KEY = "debugLog";
 const DEBUG_LOG_LIMIT = 40;
+const WATCH_GROUP_TITLE = "TW Watch";
 
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await getSettings();
@@ -103,7 +104,8 @@ async function handleMessage(message, sender) {
         broadcastSessionsByChannel: {},
         claimStatsByChannel: {},
         claimAvailabilityByChannel: {},
-        playbackStateByChannel: {}
+        playbackStateByChannel: {},
+        watchStreakByChannel: {}
       });
       const settings = await setSettings({ autoManage: false });
       await syncAlarm(false);
@@ -111,7 +113,7 @@ async function handleMessage(message, sender) {
       return { settings, closedTabs };
     }
     case "watch:uptime": {
-      await handleWatchUptime(message);
+      await handleWatchUptime(message, sender);
       return {};
     }
     case "watch:authorize": {
@@ -120,37 +122,46 @@ async function handleMessage(message, sender) {
       };
     }
     case "watch:playback-corrected": {
-      await appendDebugLog("watch:playback-corrected", {
-        channel: String(message?.channel || "").toLowerCase()
-      });
+      const channel = String(message?.channel || "").toLowerCase();
+      const authorized = await canManageChannelForTab(channel, sender?.tab?.id);
+      if (!authorized) {
+        return {};
+      }
+
+      await appendDebugLog("watch:playback-corrected", { channel });
       return {};
     }
     case "watch:playback-resumed": {
-      await appendDebugLog("watch:playback-resumed", {
-        channel: String(message?.channel || "").toLowerCase()
-      });
+      const channel = String(message?.channel || "").toLowerCase();
+      const authorized = await canManageChannelForTab(channel, sender?.tab?.id);
+      if (!authorized) {
+        return {};
+      }
+
+      await appendDebugLog("watch:playback-resumed", { channel });
       return {};
     }
     case "watch:playback-state": {
       const channel = String(message?.channel || "").toLowerCase();
-      if (!channel || !Number.isInteger(sender?.tab?.id)) {
+      const senderTabId = sender?.tab?.id;
+      if (!channel || !Number.isInteger(senderTabId)) {
         await appendDebugLog("playback-state:invalid", {
           channel,
-          tabId: sender?.tab?.id
+          tabId: senderTabId
+        });
+        return {};
+      }
+
+      const authorized = await canManageChannelForTab(channel, senderTabId);
+      if (!authorized) {
+        await appendDebugLog("playback-state:ignored", {
+          channel,
+          senderTabId
         });
         return {};
       }
 
       const runtimeState = await getRuntimeState();
-      if (runtimeState.managedTabsByChannel[channel] !== sender.tab.id) {
-        await appendDebugLog("playback-state:ignored", {
-          channel,
-          senderTabId: sender.tab.id,
-          expectedTabId: runtimeState.managedTabsByChannel[channel] || null
-        });
-        return {};
-      }
-
       const state = message?.state === "paused" ? "paused" : message?.state === "muted" ? "muted" : "ok";
       await appendDebugLog("playback-state:updated", {
         channel,
@@ -175,6 +186,10 @@ async function handleMessage(message, sender) {
     }
     case "claim:status": {
       await updateClaimAvailability(message, sender);
+      return {};
+    }
+    case "streak:report": {
+      await updateWatchStreak(message, sender);
       return {};
     }
     default:
@@ -204,6 +219,7 @@ async function reconcileManagedTabs(settings) {
   const nextClaimStatsByChannel = { ...runtimeState.claimStatsByChannel };
   const nextClaimAvailabilityByChannel = { ...runtimeState.claimAvailabilityByChannel };
   const nextPlaybackStateByChannel = { ...runtimeState.playbackStateByChannel };
+  const nextWatchStreakByChannel = { ...runtimeState.watchStreakByChannel };
 
   await appendDebugLog("reconcile:start", {
     prioritizedChannels,
@@ -224,6 +240,7 @@ async function reconcileManagedTabs(settings) {
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
+      delete nextWatchStreakByChannel[channel];
       nextDetachedChannels.delete(channel);
       continue;
     }
@@ -240,6 +257,7 @@ async function reconcileManagedTabs(settings) {
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
+      delete nextWatchStreakByChannel[channel];
       continue;
     }
 
@@ -269,6 +287,7 @@ async function reconcileManagedTabs(settings) {
       delete nextClaimStatsByChannel[channel];
       delete nextClaimAvailabilityByChannel[channel];
       delete nextPlaybackStateByChannel[channel];
+      delete nextWatchStreakByChannel[channel];
       nextDetachedChannels.add(channel);
       continue;
     }
@@ -363,6 +382,12 @@ async function reconcileManagedTabs(settings) {
     }
   }
 
+  for (const channel of Object.keys(nextWatchStreakByChannel)) {
+    if (!assignedChannels.has(channel)) {
+      delete nextWatchStreakByChannel[channel];
+    }
+  }
+
   await setRuntimeState({
     managedTabsByChannel: nextManagedTabsByChannel,
     detachedChannels: [...nextDetachedChannels],
@@ -370,7 +395,8 @@ async function reconcileManagedTabs(settings) {
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
     claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
-    playbackStateByChannel: nextPlaybackStateByChannel
+    playbackStateByChannel: nextPlaybackStateByChannel,
+    watchStreakByChannel: nextWatchStreakByChannel
   });
   void requestPlaybackStateForManagedTabs(nextManagedTabsByChannel);
   setTimeout(
@@ -386,7 +412,8 @@ async function reconcileManagedTabs(settings) {
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
     claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
-    playbackStateByChannel: nextPlaybackStateByChannel
+    playbackStateByChannel: nextPlaybackStateByChannel,
+    watchStreakByChannel: nextWatchStreakByChannel
   });
   return nextManagedTabsByChannel;
 }
@@ -407,6 +434,24 @@ async function requestPlaybackStateForManagedTabs(managedTabsByChannel) {
         tabId
       });
     }
+  }
+}
+
+async function requestWatchStreakForManagedTab(channel, tabId) {
+  if (!channel || !Number.isInteger(tabId)) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "watch:request-streak",
+      channel
+    });
+  } catch (_error) {
+    await appendDebugLog("watch:streak-request-failed", {
+      channel,
+      tabId
+    });
   }
 }
 
@@ -479,21 +524,29 @@ async function resetManagedWatchState() {
     broadcastSessionsByChannel: {},
     claimStatsByChannel: {},
     claimAvailabilityByChannel: {},
-    playbackStateByChannel: {}
+    playbackStateByChannel: {},
+    watchStreakByChannel: {}
   });
   await appendDebugLog("reset:done", {});
 }
 
-async function handleWatchUptime(message) {
+async function handleWatchUptime(message, sender) {
   const channel = String(message?.channel || "").toLowerCase();
+  const tabId = sender?.tab?.id;
   const uptimeSeconds = Math.floor(Number(message?.uptimeSeconds));
 
-  if (!channel || !Number.isFinite(uptimeSeconds) || uptimeSeconds < 0) {
+  if (!channel || !Number.isFinite(uptimeSeconds) || uptimeSeconds < 0 || !Number.isInteger(tabId)) {
+    return;
+  }
+
+  const authorized = await canManageChannelForTab(channel, tabId);
+  if (!authorized) {
     return;
   }
 
   const runtimeState = await getRuntimeState();
-  if (!runtimeState.managedTabsByChannel[channel]) {
+  const managedTabId = runtimeState.managedTabsByChannel[channel];
+  if (!managedTabId) {
     return;
   }
 
@@ -511,6 +564,9 @@ async function handleWatchUptime(message) {
   const nextClaimAvailabilityByChannel = {
     ...runtimeState.claimAvailabilityByChannel
   };
+  const nextWatchStreakByChannel = {
+    ...runtimeState.watchStreakByChannel
+  };
 
   if (!currentBroadcast) {
     nextBroadcastSessionsByChannel[channel] = {
@@ -525,6 +581,7 @@ async function handleWatchUptime(message) {
       uptimeSeconds,
       estimatedStartedAt
     });
+    await requestWatchStreakForManagedTab(channel, managedTabId);
     return;
   }
 
@@ -539,18 +596,19 @@ async function handleWatchUptime(message) {
     lastUptimeSeconds: uptimeSeconds
   };
 
-    if (broadcastRestarted) {
-      nextWatchSessionsByChannel[channel] = {
-        startedAt: Date.now()
-      };
-      nextClaimStatsByChannel[channel] = {
-        count: 0,
-        lastClaimAt: Date.now()
-      };
-      nextClaimAvailabilityByChannel[channel] = {
-        available: false,
-        seenAt: 0
+  if (broadcastRestarted) {
+    nextWatchSessionsByChannel[channel] = {
+      startedAt: Date.now()
     };
+    nextClaimStatsByChannel[channel] = {
+      count: 0,
+      lastClaimAt: Date.now()
+    };
+    nextClaimAvailabilityByChannel[channel] = {
+      available: false,
+      seenAt: 0
+    };
+    delete nextWatchStreakByChannel[channel];
     await appendDebugLog("watch:session-reset", {
       channel,
       previousBroadcast: currentBroadcast,
@@ -563,8 +621,13 @@ async function handleWatchUptime(message) {
     broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
     watchSessionsByChannel: nextWatchSessionsByChannel,
     claimStatsByChannel: nextClaimStatsByChannel,
-    claimAvailabilityByChannel: nextClaimAvailabilityByChannel
+    claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
+    watchStreakByChannel: nextWatchStreakByChannel
   });
+
+  if (broadcastRestarted) {
+    await requestWatchStreakForManagedTab(channel, managedTabId);
+  }
 }
 
 function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUptimeSeconds) {
@@ -593,6 +656,10 @@ async function canAutoClaim(message, sender) {
 async function canManageWatchTab(message, sender) {
   const channel = String(message?.channel || "").toLowerCase();
   const tabId = sender?.tab?.id;
+  return canManageChannelForTab(channel, tabId);
+}
+
+async function canManageChannelForTab(channel, tabId) {
   if (!channel || !Number.isInteger(tabId)) {
     return false;
   }
@@ -601,15 +668,47 @@ async function canManageWatchTab(message, sender) {
   if (!settings.autoManage) {
     return false;
   }
+  const isImportant = settings.importantChannels.some((entry) => entry.name === channel);
+  if (!isImportant) {
+    return false;
+  }
 
   const runtimeState = await getRuntimeState();
-  return runtimeState.managedTabsByChannel[channel] === tabId;
+  if (runtimeState.managedTabsByChannel[channel] !== tabId) {
+    return false;
+  }
+
+  const tab = await getExistingTab(tabId);
+  if (!tab) {
+    return false;
+  }
+
+  const tabChannel = getChannelFromTab(tab);
+  if (tabChannel !== channel) {
+    return false;
+  }
+
+  if (!Number.isInteger(tab.groupId) || tab.groupId < 0) {
+    return false;
+  }
+
+  try {
+    const group = await chrome.tabGroups.get(tab.groupId);
+    return group?.title === WATCH_GROUP_TITLE;
+  } catch (_error) {
+    return false;
+  }
 }
 
 async function recordClaim(message, sender) {
   const channel = String(message?.channel || "").toLowerCase();
   const tabId = sender?.tab?.id;
   if (!channel || !Number.isInteger(tabId)) {
+    return;
+  }
+
+  const authorized = await canManageChannelForTab(channel, tabId);
+  if (!authorized) {
     return;
   }
 
@@ -660,6 +759,11 @@ async function updateClaimAvailability(message, sender) {
     return;
   }
 
+  const authorized = await canManageChannelForTab(channel, tabId);
+  if (!authorized) {
+    return;
+  }
+
   const runtimeState = await getRuntimeState();
   if (runtimeState.managedTabsByChannel[channel] !== tabId) {
     return;
@@ -684,6 +788,53 @@ async function updateClaimAvailability(message, sender) {
   });
   await appendDebugLog(available ? "claim:available" : "claim:cleared", {
     channel
+  });
+}
+
+async function updateWatchStreak(message, sender) {
+  const channel = String(message?.channel || "").toLowerCase();
+  const tabId = sender?.tab?.id;
+  const value = Math.floor(Number(message?.value));
+
+  if (!channel || !Number.isInteger(tabId)) {
+    return;
+  }
+
+  if (!Number.isInteger(value) || value < 0) {
+    return;
+  }
+
+  const authorized = await canManageChannelForTab(channel, tabId);
+  if (!authorized) {
+    return;
+  }
+
+  const runtimeState = await getRuntimeState();
+  if (runtimeState.managedTabsByChannel[channel] !== tabId) {
+    return;
+  }
+
+  const current = runtimeState.watchStreakByChannel?.[channel];
+  if (current?.value === value) {
+    return;
+  }
+  const increased = Number.isInteger(current?.value) && value > current.value;
+
+  const nextWatchStreakByChannel = {
+    ...runtimeState.watchStreakByChannel,
+    [channel]: {
+      value,
+      increased,
+      seenAt: Date.now()
+    }
+  };
+
+  await setRuntimeState({
+    watchStreakByChannel: nextWatchStreakByChannel
+  });
+  await appendDebugLog("streak:updated", {
+    channel,
+    value
   });
 }
 
