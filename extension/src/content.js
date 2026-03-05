@@ -16,6 +16,9 @@ const FAST_PLAYBACK_POLL_INTERVAL_MS = 5000;
 const SLOW_PLAYBACK_POLL_INTERVAL_MS = 60000;
 const FAST_PLAYBACK_REPORT_TICKS = 6;
 const PLAYBACK_REPORT_DEBOUNCE_MS = 350;
+const RESUME_GAP_THRESHOLD_MS = 180000;
+const NETWORK_ERROR_RELOAD_COOLDOWN_MS = 120000;
+const NETWORK_ERROR_RELOAD_AT_KEY = "twWatchGuardLastNetworkErrorReloadAt";
 const PLAYBACK_STATE_EVENTS = [
   "play",
   "pause",
@@ -37,6 +40,7 @@ let requestedPlaybackRefresh = 0;
 let requestedStreakRefresh = 0;
 let lastWatchStreakReportKey = null;
 let streakProbeInFlight = false;
+let lastLifecycleHeartbeatAt = Date.now();
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "watch:request-playback-state") {
@@ -60,20 +64,27 @@ chrome.runtime.onMessage.addListener((message) => {
 void init();
 
 async function init() {
+  setupResumeRecoveryWatchers();
+  touchLifecycleHeartbeat();
   await syncButton();
   window.setInterval(() => {
+    touchLifecycleHeartbeat();
     void syncButton();
   }, 1000);
   window.setInterval(() => {
+    touchLifecycleHeartbeat();
     void reportWatchUptime();
   }, 15000);
   window.setInterval(() => {
+    touchLifecycleHeartbeat();
     void tryAutoClaimBonus();
   }, 5000);
   window.setInterval(() => {
+    touchLifecycleHeartbeat();
     void ensureManagedPlaybackState();
   }, 5000);
   window.setInterval(() => {
+    touchLifecycleHeartbeat();
     void reportWatchStreak();
   }, WATCH_STREAK_POLL_INTERVAL_MS);
   startPlaybackStatePolling();
@@ -415,6 +426,7 @@ async function reportWatchStreak() {
 }
 
 async function ensureManagedPlaybackState() {
+  touchLifecycleHeartbeat();
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
     return;
@@ -432,6 +444,11 @@ async function ensureManagedPlaybackState() {
   }
 
   if (!response?.ok || !response.authorized) {
+    return;
+  }
+
+  if (shouldReloadForNetworkError2000()) {
+    window.location.reload();
     return;
   }
 
@@ -500,6 +517,7 @@ function startPlaybackStatePolling() {
 function scheduleNextPlaybackStatePoll(delayMs) {
   window.clearTimeout(playbackStatePollTimeoutId);
   playbackStatePollTimeoutId = window.setTimeout(() => {
+    touchLifecycleHeartbeat();
     void runPlaybackStatePollTick();
   }, delayMs);
 }
@@ -895,6 +913,93 @@ function wait(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, timeout);
   });
+}
+
+function setupResumeRecoveryWatchers() {
+  window.addEventListener("visibilitychange", onResumeSignal, { passive: true });
+  window.addEventListener("pageshow", onResumeSignal, { passive: true });
+  window.addEventListener("focus", onResumeSignal, { passive: true });
+}
+
+function onResumeSignal() {
+  const now = Date.now();
+  const resumeGapMs = now - lastLifecycleHeartbeatAt;
+  touchLifecycleHeartbeat();
+
+  if (document.hidden || document.visibilityState !== "visible") {
+    return;
+  }
+
+  if (resumeGapMs >= RESUME_GAP_THRESHOLD_MS && shouldReloadForNetworkError2000()) {
+    window.location.reload();
+    return;
+  }
+
+  void syncButton();
+  void reportWatchUptime();
+  void tryAutoClaimBonus();
+  void ensureManagedPlaybackState();
+}
+
+function touchLifecycleHeartbeat() {
+  lastLifecycleHeartbeatAt = Date.now();
+}
+
+function shouldReloadForNetworkError2000() {
+  if (!hasPlayerNetworkError2000()) {
+    return false;
+  }
+
+  const now = Date.now();
+  const previousReloadAt = readLastNetworkErrorReloadAt();
+  if (previousReloadAt > 0 && now - previousReloadAt < NETWORK_ERROR_RELOAD_COOLDOWN_MS) {
+    return false;
+  }
+
+  writeLastNetworkErrorReloadAt(now);
+  return true;
+}
+
+function hasPlayerNetworkError2000() {
+  const textCandidates = [
+    document.querySelector("[data-a-target='video-player']")?.textContent || "",
+    document.querySelector("[data-a-target='player-overlay-click-handler']")?.textContent || "",
+    document.querySelector("[role='alert']")?.textContent || "",
+    document.body?.innerText || ""
+  ];
+
+  for (const textValue of textCandidates) {
+    const text = String(textValue || "");
+    if (!text) {
+      continue;
+    }
+
+    if (/\(\s*[^\)]*#?\s*2000\s*\)/i.test(text) || /#\s*2000\b/i.test(text)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function readLastNetworkErrorReloadAt() {
+  try {
+    const value = Math.round(Number(window.sessionStorage.getItem(NETWORK_ERROR_RELOAD_AT_KEY)));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch (_error) {
+    return 0;
+  }
+}
+
+function writeLastNetworkErrorReloadAt(timestamp) {
+  try {
+    window.sessionStorage.setItem(
+      NETWORK_ERROR_RELOAD_AT_KEY,
+      String(Math.max(0, Math.round(Number(timestamp) || 0)))
+    );
+  } catch (_error) {
+    // Ignore storage restrictions.
+  }
 }
 
 function readCandidateTexts(selector) {

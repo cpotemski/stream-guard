@@ -9,12 +9,14 @@ import { getChannelsLiveStatus, selectLiveChannels } from "./lib/liveStatus.js";
 import { closeManagedWatchTabs, openWatchTab } from "./lib/tabManager.js";
 
 const ORCHESTRATOR_ALARM = "orchestrator-tick";
+const ORCHESTRATOR_LAST_TICK_AT_KEY = "orchestratorLastTickAt";
 const DEBUG_LOG_KEY = "debugLog";
 const DEBUG_LOG_LIMIT = 40;
 const WATCH_GROUP_TITLE = "TW Watch";
 const STATE_CACHE_TTL_MS = 1500;
 const AUTH_CACHE_TTL_MS = 3000;
 const DEBUG_LOG_FLUSH_DELAY_MS = 800;
+const WAKE_GAP_THRESHOLD_MS = 180000;
 
 let cachedSettings = null;
 let cachedSettingsExpiresAt = 0;
@@ -47,9 +49,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
 
+  const wakeGapMs = await recordAndGetOrchestratorWakeGapMs();
   const settings = await readSettingsCached();
   if (settings.autoManage) {
-    await reconcileManagedTabs(settings);
+    if (wakeGapMs >= WAKE_GAP_THRESHOLD_MS) {
+      await appendDebugLog("orchestrator:wake-detected", { wakeGapMs });
+      await recoverManagedTabsAfterWake(settings);
+    } else {
+      await reconcileManagedTabs(settings);
+    }
   }
   await updateBadge(settings);
 });
@@ -475,6 +483,55 @@ async function requestPlaybackStateForManagedTabs(managedTabsByChannel) {
         channel,
         tabId
       });
+    }
+  }
+}
+
+async function recoverManagedTabsAfterWake(settings) {
+  const managedTabsByChannel = await reconcileManagedTabs(settings);
+  const entries = Object.entries(managedTabsByChannel || {})
+    .filter(([, tabId]) => Number.isInteger(tabId));
+
+  for (const [channel, tabId] of entries) {
+    const tab = await getExistingTab(tabId);
+    if (!tab) {
+      continue;
+    }
+
+    if (tab.discarded) {
+      try {
+        await chrome.tabs.reload(tabId);
+        await appendDebugLog("wake:tab-reloaded-discarded", {
+          channel,
+          tabId
+        });
+      } catch (_error) {
+        await appendDebugLog("wake:tab-reload-failed-discarded", {
+          channel,
+          tabId
+        });
+      }
+      continue;
+    }
+
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: "watch:request-playback-state",
+        channel
+      });
+    } catch (_error) {
+      try {
+        await chrome.tabs.reload(tabId);
+        await appendDebugLog("wake:tab-reloaded-unreachable", {
+          channel,
+          tabId
+        });
+      } catch (_reloadError) {
+        await appendDebugLog("wake:tab-reload-failed-unreachable", {
+          channel,
+          tabId
+        });
+      }
     }
   }
 }
@@ -920,6 +977,23 @@ async function getDebugLog() {
   await flushDebugLogEntries();
   const stored = await chrome.storage.local.get({ [DEBUG_LOG_KEY]: [] });
   return Array.isArray(stored[DEBUG_LOG_KEY]) ? stored[DEBUG_LOG_KEY] : [];
+}
+
+async function recordAndGetOrchestratorWakeGapMs() {
+  const now = Date.now();
+  const stored = await chrome.storage.local.get({
+    [ORCHESTRATOR_LAST_TICK_AT_KEY]: 0
+  });
+  const previousTickAt = Math.round(Number(stored[ORCHESTRATOR_LAST_TICK_AT_KEY]));
+  await chrome.storage.local.set({
+    [ORCHESTRATOR_LAST_TICK_AT_KEY]: now
+  });
+
+  if (!Number.isFinite(previousTickAt) || previousTickAt <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, now - previousTickAt);
 }
 
 function cacheAuthorizationResult(key, allowed) {
