@@ -1,4 +1,7 @@
 const BUTTON_ID = "tw-watch-guard-star";
+const INLINE_HEADER_ID = "tw-watch-guard-inline-header";
+const INLINE_STATS_ID = "tw-watch-guard-inline-stats";
+const INLINE_STATS_ITEMS_CLASS = "tw-watch-guard-inline-items";
 const TOAST_ID = "tw-watch-guard-toast";
 const UPTIME_SELECTOR_CANDIDATES = [
   ".live-time p",
@@ -25,6 +28,7 @@ const RESUME_GAP_THRESHOLD_MS = 180000;
 const UNMUTE_SHORTCUT_SETTLE_MS = 120;
 const NETWORK_ERROR_RELOAD_COOLDOWN_MS = 120000;
 const NETWORK_ERROR_RELOAD_AT_KEY = "twWatchGuardLastNetworkErrorReloadAt";
+const INLINE_STATS_REFRESH_INTERVAL_MS = 5000;
 const PLAYBACK_STATE_EVENTS = [
   "play",
   "pause",
@@ -52,6 +56,8 @@ let playResumeAttemptedForCurrentPause = false;
 let playResumeBlockedByPolicy = false;
 let channelAutomationReadyAt = 0;
 let startupSequenceTimeoutId = 0;
+let inlineStatsRefreshInFlight = false;
+let lastInlineStatsKey = null;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "watch:request-playback-state") {
@@ -98,6 +104,10 @@ async function init() {
     touchLifecycleHeartbeat();
     void reportWatchStreak();
   }, WATCH_STREAK_POLL_INTERVAL_MS);
+  window.setInterval(() => {
+    touchLifecycleHeartbeat();
+    void refreshInlineStats();
+  }, INLINE_STATS_REFRESH_INTERVAL_MS);
   startPlaybackStatePolling();
 }
 
@@ -130,6 +140,7 @@ async function syncButton() {
     startupSequenceTimeoutId = 0;
     detachPlaybackStateWatchers();
     removeButton();
+    removeInlineStats();
     return;
   }
 
@@ -144,6 +155,7 @@ async function syncButton() {
   startupSequenceTimeoutId = 0;
 
   await injectButton(channel);
+  void refreshInlineStats(true);
   startPlaybackStatePolling();
   attachPlaybackStateWatchers(findPlayerVideo());
   scheduleInitialChannelAutomation(channel);
@@ -169,6 +181,7 @@ async function injectButton(channel) {
       const optimisticState = !wasImportant;
       button.dataset.pending = "1";
       renderButton(button, optimisticState);
+      void refreshInlineStats(true);
 
       try {
         const response = await chrome.runtime.sendMessage({
@@ -186,6 +199,7 @@ async function injectButton(channel) {
           (entry) => entry.name === activeChannel
         );
         renderButton(button, isImportant);
+        void refreshInlineStats(true);
         showToast(
           isImportant
             ? "Zu wichtigen Channels hinzugefuegt"
@@ -194,6 +208,7 @@ async function injectButton(channel) {
       } catch (error) {
         logTabError("channel:toggle failed", error);
         renderButton(button, wasImportant);
+        void refreshInlineStats(true);
         showToast("Aktion fehlgeschlagen");
       } finally {
         delete button.dataset.pending;
@@ -226,11 +241,36 @@ function placeButton(existingButton) {
   const host = searchContainer?.parentElement;
   if (!searchContainer || !host) {
     button.remove();
+    removeInlineStats();
     return;
   }
 
-  if (button.parentElement !== host || button.previousElementSibling !== searchContainer) {
-    searchContainer.insertAdjacentElement("afterend", button);
+  let inlineHeader = document.getElementById(INLINE_HEADER_ID);
+  if (!inlineHeader) {
+    inlineHeader = document.createElement("div");
+    inlineHeader.id = INLINE_HEADER_ID;
+    inlineHeader.className = "tw-watch-guard-inline-header";
+  }
+
+  if (button.parentElement !== inlineHeader) {
+    inlineHeader.appendChild(button);
+  }
+
+  if (!inlineHeader.querySelector(`#${INLINE_STATS_ID}`)) {
+    const stats = document.createElement("div");
+    stats.id = INLINE_STATS_ID;
+    stats.className = "tw-watch-guard-inline-stats";
+    stats.hidden = true;
+
+    const items = document.createElement("div");
+    items.className = INLINE_STATS_ITEMS_CLASS;
+
+    stats.appendChild(items);
+    inlineHeader.appendChild(stats);
+  }
+
+  if (inlineHeader.parentElement !== host || inlineHeader.previousElementSibling !== searchContainer) {
+    searchContainer.insertAdjacentElement("afterend", inlineHeader);
   }
 }
 
@@ -239,6 +279,14 @@ function removeButton() {
   if (button) {
     button.remove();
   }
+}
+
+function removeInlineStats() {
+  const inlineHeader = document.getElementById(INLINE_HEADER_ID);
+  if (inlineHeader) {
+    inlineHeader.remove();
+  }
+  lastInlineStatsKey = null;
 }
 
 function attachPlaybackStateWatchers(video) {
@@ -294,6 +342,263 @@ function renderButton(button, isImportant) {
     isImportant ? "Aus wichtigen Channels entfernen" : "Als wichtigen Channel markieren"
   );
   button.title = isImportant ? "Nicht mehr wichtig" : "Als wichtig markieren";
+}
+
+async function refreshInlineStats(force = false) {
+  const channel = getChannelFromLocation(window.location.pathname);
+  const stats = document.getElementById(INLINE_STATS_ID);
+  if (!channel || !stats) {
+    return;
+  }
+
+  const button = document.getElementById(BUTTON_ID);
+  const isImportant = button?.getAttribute("aria-pressed") === "true";
+  if (inlineStatsRefreshInFlight) {
+    return;
+  }
+
+  inlineStatsRefreshInFlight = true;
+  try {
+    const runtimeState = await readRuntimeStateSnapshot();
+    const nextKey = getInlineStatsRenderKey(channel, isImportant, runtimeState);
+    if (!force && nextKey === lastInlineStatsKey) {
+      return;
+    }
+    renderInlineStats(stats, {
+      channel,
+      isImportant,
+      runtimeState
+    });
+    lastInlineStatsKey = nextKey;
+  } finally {
+    inlineStatsRefreshInFlight = false;
+  }
+}
+
+async function readRuntimeStateSnapshot() {
+  try {
+    const stored = await chrome.storage.local.get([
+      "managedTabsByChannel",
+      "broadcastSessionsByChannel",
+      "lastBroadcastStatsByChannel",
+      "claimStatsByChannel",
+      "claimAvailabilityByChannel",
+      "watchStreakByChannel"
+    ]);
+    return stored && typeof stored === "object" ? stored : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function renderInlineStats(container, context) {
+  const isImportant = Boolean(context?.isImportant);
+  const channel = String(context?.channel || "").toLowerCase();
+  const runtimeState = context?.runtimeState || {};
+  const items = container.querySelector(`.${INLINE_STATS_ITEMS_CLASS}`);
+
+  if (!items) {
+    container.hidden = true;
+    return;
+  }
+
+  items.textContent = "";
+  if (!isImportant || !channel) {
+    container.hidden = true;
+    return;
+  }
+
+  const broadcastStats = getChannelBroadcastStats(channel, runtimeState);
+  const hasSession = hasActiveRuntimeSession(channel, runtimeState);
+  const claimStats = getClaimStatsForDisplay(channel, runtimeState, broadcastStats);
+  const claimCount = getClaimCount(claimStats);
+  const streakLabel = getWatchStreakLabel(
+    getWatchStreakForDisplay(channel, runtimeState, broadcastStats),
+    broadcastStats
+  );
+  const claimReady = isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[channel]);
+
+  const hasAnyStat = claimCount !== null || streakLabel !== null || claimReady;
+  if (!hasAnyStat) {
+    const waiting = document.createElement("span");
+    waiting.className = "tw-watch-guard-inline-token is-waiting";
+    waiting.textContent = hasSession ? "..." : "-";
+    items.appendChild(waiting);
+    container.hidden = false;
+    return;
+  }
+
+  if (claimCount !== null) {
+    appendInlineToken(items, `🎁 ${claimCount}`);
+  }
+  if (streakLabel !== null) {
+    appendInlineToken(items, streakLabel);
+  }
+  if (claimReady) {
+    appendInlineToken(items, "🔔");
+  }
+
+  container.hidden = false;
+}
+
+function appendInlineToken(container, value) {
+  const token = document.createElement("span");
+  token.className = "tw-watch-guard-inline-token";
+  token.textContent = value;
+  container.appendChild(token);
+}
+
+function getInlineStatsRenderKey(channel, isImportant, runtimeState) {
+  if (!isImportant) {
+    return `${channel}:hidden`;
+  }
+
+  const claimStats = runtimeState?.claimStatsByChannel?.[channel];
+  const broadcastStats = runtimeState?.broadcastSessionsByChannel?.[channel]
+    || runtimeState?.lastBroadcastStatsByChannel?.[channel];
+  const streak = runtimeState?.watchStreakByChannel?.[channel];
+  const claimAvailability = runtimeState?.claimAvailabilityByChannel?.[channel];
+
+  return JSON.stringify({
+    channel,
+    important: true,
+    claimCount: Math.max(
+      0,
+      Math.floor(Number(claimStats?.count ?? broadcastStats?.claimCount) || 0)
+    ),
+    streakValue: Math.floor(Number(streak?.value ?? broadcastStats?.streakValue)),
+    streakIncreased: Boolean(
+      broadcastStats?.streakIncreasedForStream || streak?.increased
+    ),
+    streakUnexpected: Boolean(
+      broadcastStats?.streakUnexpectedJumpForStream || streak?.unexpectedJump
+    ),
+    claimReady: Boolean(claimAvailability?.available),
+    startedAt: Math.round(Number(broadcastStats?.estimatedStartedAt) || 0)
+  });
+}
+
+function getClaimCount(stats) {
+  const count = Number(stats?.count);
+  return Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+function getWatchStreakLabel(streakState, broadcastState) {
+  const value = Number(streakState?.value);
+  const reachedForCurrentStream = Boolean(broadcastState?.streakIncreasedForStream);
+  const hasUnexpectedJump = Boolean(
+    broadcastState?.streakUnexpectedJumpForStream || streakState?.unexpectedJump
+  );
+
+  if (!Number.isInteger(value) || value < 0) {
+    if (hasUnexpectedJump) {
+      return "🔥 ⚠";
+    }
+    return reachedForCurrentStream ? "🔥 ✅" : null;
+  }
+
+  if (hasUnexpectedJump) {
+    return `🔥 ${value} ⚠`;
+  }
+
+  return reachedForCurrentStream ? `🔥 ${value} ✅` : `🔥 ${value}`;
+}
+
+function isClaimAvailable(state) {
+  return Boolean(state?.available);
+}
+
+function getClaimStatsForDisplay(channel, runtimeState, broadcastStats) {
+  const runtimeStats = runtimeState?.claimStatsByChannel?.[channel];
+  const activeBroadcast = runtimeState?.broadcastSessionsByChannel?.[channel];
+
+  if (runtimeStats && isSameBroadcast(activeBroadcast, broadcastStats)) {
+    return runtimeStats;
+  }
+
+  if (!broadcastStats) {
+    return runtimeStats || null;
+  }
+
+  return {
+    count: Math.max(0, Math.floor(Number(broadcastStats.claimCount) || 0)),
+    lastClaimAt: Math.max(0, Math.round(Number(broadcastStats.lastClaimAt) || 0))
+  };
+}
+
+function getWatchStreakForDisplay(channel, runtimeState, broadcastStats) {
+  const runtimeStreak = runtimeState?.watchStreakByChannel?.[channel];
+  if (runtimeStreak && isWatchStreakForBroadcast(runtimeStreak, broadcastStats)) {
+    return runtimeStreak;
+  }
+
+  const streakValue = Math.floor(Number(broadcastStats?.streakValue));
+  if (!Number.isInteger(streakValue) || streakValue < 0) {
+    return runtimeStreak || null;
+  }
+
+  return {
+    value: streakValue,
+    increased: Boolean(broadcastStats?.streakIncreasedForStream),
+    unexpectedJump: Boolean(broadcastStats?.streakUnexpectedJumpForStream),
+    seenAt: Math.max(0, Math.round(Number(broadcastStats?.streakSeenAt) || 0))
+  };
+}
+
+function getChannelBroadcastStats(channel, runtimeState) {
+  if (!channel || !runtimeState || typeof runtimeState !== "object") {
+    return null;
+  }
+
+  const activeBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+  if (isValidBroadcastStats(activeBroadcast)) {
+    return activeBroadcast;
+  }
+
+  const lastBroadcast = runtimeState.lastBroadcastStatsByChannel?.[channel];
+  if (isValidBroadcastStats(lastBroadcast)) {
+    return lastBroadcast;
+  }
+
+  return null;
+}
+
+function isValidBroadcastStats(stats) {
+  const startedAt = Math.round(Number(stats?.estimatedStartedAt));
+  return Number.isFinite(startedAt) && startedAt > 0;
+}
+
+function isSameBroadcast(left, right) {
+  const leftStartedAt = Math.round(Number(left?.estimatedStartedAt));
+  const rightStartedAt = Math.round(Number(right?.estimatedStartedAt));
+  if (!Number.isFinite(leftStartedAt) || !Number.isFinite(rightStartedAt)) {
+    return false;
+  }
+
+  return leftStartedAt === rightStartedAt;
+}
+
+function isWatchStreakForBroadcast(streak, broadcastStats) {
+  const streakStartedAt = Math.round(Number(streak?.broadcastStartedAt));
+  const broadcastStartedAt = Math.round(Number(broadcastStats?.estimatedStartedAt));
+  if (!Number.isFinite(streakStartedAt) || !Number.isFinite(broadcastStartedAt)) {
+    return false;
+  }
+
+  return streakStartedAt > 0 && streakStartedAt === broadcastStartedAt;
+}
+
+function hasActiveRuntimeSession(channel, runtimeState) {
+  if (!channel || !runtimeState || typeof runtimeState !== "object") {
+    return false;
+  }
+
+  if (Number.isInteger(runtimeState.managedTabsByChannel?.[channel])) {
+    return true;
+  }
+
+  const broadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+  return isValidBroadcastStats(broadcast);
 }
 
 function showToast(message) {
