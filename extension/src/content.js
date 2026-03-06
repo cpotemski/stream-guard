@@ -3,13 +3,8 @@ const INLINE_HEADER_ID = "tw-watch-guard-inline-header";
 const INLINE_STATS_ID = "tw-watch-guard-inline-stats";
 const INLINE_STATS_ITEMS_CLASS = "tw-watch-guard-inline-items";
 const TOAST_ID = "tw-watch-guard-toast";
-const UPTIME_SELECTOR_CANDIDATES = [
-  ".live-time p",
-  ".live-time [aria-hidden='true']",
-  "[data-a-target='stream-time']",
-  "[data-test-selector='stream-time-value']",
-  ".live-time"
-];
+const LIVE_CHANNEL_STREAM_INFORMATION_ID = "live-channel-stream-information";
+const LIVE_CHANNEL_UPTIME_SELECTOR = ".live-time";
 const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
 const CHANNEL_STARTUP_GRACE_MS = 10000;
 const WATCH_STREAK_POLL_INTERVAL_MS = 300000;
@@ -1016,31 +1011,17 @@ function getChannelFromLocation(pathname) {
 }
 
 function getVisibleStreamUptimeSeconds() {
-  let bestMatch = null;
-
-  for (const selector of UPTIME_SELECTOR_CANDIDATES) {
-    const uptimeTexts = readCandidateTexts(selector);
-
-    for (const uptimeText of uptimeTexts) {
-      const uptimeSeconds = parseUptimeText(uptimeText);
-      if (uptimeSeconds !== null && (bestMatch === null || uptimeSeconds > bestMatch)) {
-        bestMatch = uptimeSeconds;
-      }
-    }
+  const liveInfoRoot = document.getElementById(LIVE_CHANNEL_STREAM_INFORMATION_ID);
+  if (!liveInfoRoot) {
+    return null;
   }
 
-  const pageText = String(document.body?.innerText || "").trim();
-  const labeledMatch = parseLabeledUptimeText(pageText);
-  if (labeledMatch !== null) {
-    return labeledMatch;
+  const uptimeNode = liveInfoRoot.querySelector(LIVE_CHANNEL_UPTIME_SELECTOR);
+  if (!(uptimeNode instanceof HTMLElement)) {
+    return null;
   }
 
-  const pageWideMatch = parseLargestUptimeText(pageText);
-  if (pageWideMatch !== null && (bestMatch === null || pageWideMatch > bestMatch)) {
-    bestMatch = pageWideMatch;
-  }
-
-  return bestMatch;
+  return parseUptimeText(uptimeNode.textContent || "");
 }
 
 function findClaimButton() {
@@ -1741,20 +1722,6 @@ function writeLastNetworkErrorReloadAt(timestamp) {
   }
 }
 
-function readCandidateTexts(selector) {
-  const nodes = document.querySelectorAll(selector);
-  const values = [];
-
-  for (const node of nodes) {
-    const text = String(node?.textContent || "").trim();
-    if (text) {
-      values.push(text);
-    }
-  }
-
-  return values;
-}
-
 function parseUptimeText(value) {
   const text = String(value || "").trim();
   if (!text) {
@@ -1767,41 +1734,6 @@ function parseUptimeText(value) {
   }
 
   return parseDurationToken(match[1]);
-}
-
-function parseLabeledUptimeText(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return null;
-  }
-
-  const match = text.match(
-    /\b(\d{1,2}:\d{2}(?::\d{2})?)\b(?=[^\n]{0,80}\bsince\s+live\b)/i
-  );
-  if (!match) {
-    return null;
-  }
-
-  return parseDurationToken(match[1]);
-}
-
-function parseLargestUptimeText(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return null;
-  }
-
-  const matches = [...text.matchAll(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/g)];
-  let bestMatch = null;
-
-  for (const match of matches) {
-    const uptimeSeconds = parseDurationToken(match[1]);
-    if (uptimeSeconds !== null && (bestMatch === null || uptimeSeconds > bestMatch)) {
-      bestMatch = uptimeSeconds;
-    }
-  }
-
-  return bestMatch;
 }
 
 function parseDurationToken(value) {

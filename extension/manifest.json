@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Stream Guard",
-  "version": "1.0.10",
+  "version": "1.0.12",
   "description": "Manage important Twitch watch tabs without tab chaos.",
   "icons": {
     "16": "icons/icon16.png",
