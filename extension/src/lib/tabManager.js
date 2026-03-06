@@ -20,6 +20,12 @@ export async function openWatchTab(channel) {
     return null;
   }
 
+  try {
+    await chrome.tabs.update(tab.id, { muted: true });
+  } catch {
+    // If muting fails transiently, keep tab management running.
+  }
+
   await ensureWatchGroup([tab.id]);
   void requestTabPrime(tab.id);
   return tab.id;
