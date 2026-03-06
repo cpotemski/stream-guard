@@ -15,7 +15,11 @@ export function createMessageRouter({
   canManageChannelForTab,
   recordClaim,
   updateClaimAvailability,
-  updateWatchStreak
+  updateWatchStreak,
+  logTabTelemetryEvent,
+  exportTelemetrySnapshot,
+  clearTelemetry,
+  getTelemetryStats
 }) {
   return async function handleMessage(message, sender) {
     switch (message?.type) {
@@ -26,7 +30,8 @@ export function createMessageRouter({
       case "status:get": {
         const settings = await readSettingsCached();
         const runtimeState = await readRuntimeStateCached();
-        return { settings, runtimeState };
+        const telemetry = await getTelemetryStats();
+        return { settings, runtimeState, telemetry };
       }
       case "channel:toggle": {
         const settings = await toggleImportantChannel(message.channel);
@@ -65,6 +70,7 @@ export function createMessageRouter({
           detachedUntilByChannel: {},
           watchSessionsByChannel: {},
           broadcastSessionsByChannel: {},
+          lastBroadcastStatsByChannel: {},
           claimStatsByChannel: {},
           claimAvailabilityByChannel: {},
           playbackStateByChannel: {},
@@ -156,6 +162,66 @@ export function createMessageRouter({
       case "streak:report": {
         await updateWatchStreak(message, sender);
         return {};
+      }
+      case "streak:probe-log": {
+        const channel = String(message?.channel || "").toLowerCase();
+        const senderTabId = sender?.tab?.id;
+        const reason = String(message?.reason || "").toLowerCase();
+        const details = message?.details && typeof message.details === "object"
+          ? message.details
+          : {};
+
+        if (!channel || !reason || !Number.isInteger(senderTabId)) {
+          await logWorkerEvent("streak:probe-log:invalid", {
+            channel,
+            reason,
+            senderTabId
+          });
+          return {};
+        }
+
+        const authorized = await canManageChannelForTab(channel, senderTabId);
+        if (!authorized) {
+          await logWorkerEvent("streak:probe-log:ignored", {
+            channel,
+            reason,
+            senderTabId
+          });
+          return {};
+        }
+
+        await logWorkerEvent("streak:probe-log", {
+          channel,
+          reason,
+          details
+        });
+        return {};
+      }
+      case "telemetry:tab-event": {
+        const event = String(message?.event || "").toLowerCase();
+        const details = message?.details && typeof message.details === "object"
+          ? message.details
+          : {};
+        const senderTabId = sender?.tab?.id;
+
+        if (!event || !Number.isInteger(senderTabId)) {
+          return {};
+        }
+
+        await logTabTelemetryEvent({
+          event,
+          details,
+          sender
+        });
+        return {};
+      }
+      case "telemetry:export": {
+        const snapshot = await exportTelemetrySnapshot();
+        return { snapshot };
+      }
+      case "telemetry:clear": {
+        const result = await clearTelemetry();
+        return result;
       }
       default:
         throw new Error("Unsupported message type.");

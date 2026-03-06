@@ -179,19 +179,19 @@
 .channel-stats {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   min-height: 14px;
-}
-
-.channel-watchtime {
-  color: #94a3b8;
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .channel-claims {
   color: #fbbf24;
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.channel-claim-minutes {
+  color: #64748b;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -243,4 +243,34 @@
 .empty-state {
   margin: 0;
   color: #cbd5e1;
+}
+
+.panel-debug {
+  margin-top: 10px;
+}
+
+.telemetry-status {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.telemetry-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.telemetry-button {
+  border: 1px solid #475569;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: #e2e8f0;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.telemetry-button:hover:not(:disabled) {
+  border-color: #64748b;
+  color: #ffffff;
 }

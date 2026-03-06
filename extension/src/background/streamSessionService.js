@@ -43,16 +43,21 @@ export function createStreamSessionService({
     const nextWatchStreakByChannel = {
       ...runtimeState.watchStreakByChannel
     };
+    const nextLastBroadcastStatsByChannel = {
+      ...runtimeState.lastBroadcastStatsByChannel
+    };
 
     if (!currentBroadcast) {
-      nextBroadcastSessionsByChannel[channel] = {
+      const nextBroadcastSession = createBroadcastSession({
         estimatedStartedAt,
-        lastUptimeSeconds: uptimeSeconds,
-        lastSeenAt: now,
-        streakIncreasedForStream: false
-      };
+        uptimeSeconds,
+        now
+      });
+      nextBroadcastSessionsByChannel[channel] = nextBroadcastSession;
+      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcastSession);
       await writeRuntimeState({
-        broadcastSessionsByChannel: nextBroadcastSessionsByChannel
+        broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+        lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
       });
       await logWorkerEvent("watch:uptime-init", {
         channel,
@@ -70,19 +75,26 @@ export function createStreamSessionService({
     );
 
     nextBroadcastSessionsByChannel[channel] = {
+      ...currentBroadcast,
       estimatedStartedAt,
       lastUptimeSeconds: uptimeSeconds,
       lastSeenAt: now,
-      streakIncreasedForStream: Boolean(currentBroadcast?.streakIncreasedForStream)
+      claimCount: Math.max(0, Math.floor(Number(currentBroadcast?.claimCount) || 0)),
+      lastClaimAt: Math.round(Number(currentBroadcast?.lastClaimAt) || 0),
+      streakValue: normalizeStreakValue(currentBroadcast?.streakValue),
+      streakSeenAt: Math.round(Number(currentBroadcast?.streakSeenAt) || 0),
+      baselineStreakValue: normalizeStreakValue(currentBroadcast?.baselineStreakValue),
+      baselineStreakSeenAt: Math.round(Number(currentBroadcast?.baselineStreakSeenAt) || 0),
+      streakIncreasedForStream: Boolean(currentBroadcast?.streakIncreasedForStream),
+      streakUnexpectedJumpForStream: Boolean(currentBroadcast?.streakUnexpectedJumpForStream)
     };
 
     if (broadcastRestarted) {
-      nextBroadcastSessionsByChannel[channel] = {
+      nextBroadcastSessionsByChannel[channel] = createBroadcastSession({
         estimatedStartedAt,
-        lastUptimeSeconds: uptimeSeconds,
-        lastSeenAt: now,
-        streakIncreasedForStream: false
-      };
+        uptimeSeconds,
+        now
+      });
       nextWatchSessionsByChannel[channel] = {
         startedAt: Date.now()
       };
@@ -102,13 +114,17 @@ export function createStreamSessionService({
         estimatedStartedAt
       });
     }
+    nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(
+      nextBroadcastSessionsByChannel[channel]
+    );
 
     await writeRuntimeState({
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
-      watchStreakByChannel: nextWatchStreakByChannel
+      watchStreakByChannel: nextWatchStreakByChannel,
+      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
     });
 
     if (broadcastRestarted) {
@@ -157,10 +173,28 @@ export function createStreamSessionService({
         seenAt: now
       }
     };
+    const nextBroadcastSessionsByChannel = {
+      ...runtimeState.broadcastSessionsByChannel
+    };
+    const nextLastBroadcastStatsByChannel = {
+      ...runtimeState.lastBroadcastStatsByChannel
+    };
+    const currentBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+    if (currentBroadcast) {
+      const nextBroadcast = {
+        ...currentBroadcast,
+        claimCount: nextClaimStatsByChannel[channel].count,
+        lastClaimAt: now
+      };
+      nextBroadcastSessionsByChannel[channel] = nextBroadcast;
+      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcast);
+    }
 
     await writeRuntimeState({
       claimStatsByChannel: nextClaimStatsByChannel,
-      claimAvailabilityByChannel: nextClaimAvailabilityByChannel
+      claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
+      broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
     });
     await logWorkerEvent("claim:recorded", {
       channel,
@@ -230,41 +264,94 @@ export function createStreamSessionService({
       return;
     }
 
-    const current = runtimeState.watchStreakByChannel?.[channel];
-    if (current?.value === value) {
+    const currentBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+    if (!currentBroadcast) {
       return;
     }
-    const increased = Number.isInteger(current?.value) && value > current.value;
-    const currentBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
-    const reachedForCurrentStream = Boolean(currentBroadcast?.streakIncreasedForStream) || increased;
+
+    const currentBroadcastStartedAt = Math.round(Number(currentBroadcast?.estimatedStartedAt));
+    const normalizedStartedAt = (
+      Number.isFinite(currentBroadcastStartedAt) && currentBroadcastStartedAt > 0
+        ? currentBroadcastStartedAt
+        : 0
+    );
+    const previousReportedValue = normalizeStreakValue(currentBroadcast?.streakValue);
+    if (previousReportedValue !== null && previousReportedValue === value) {
+      return;
+    }
+
+    const now = Date.now();
+    const existingBaseline = normalizeStreakValue(currentBroadcast?.baselineStreakValue);
+    const existingBaselineSeenAt = Math.round(Number(currentBroadcast?.baselineStreakSeenAt) || 0);
+    const hasKnownBaseline = existingBaseline !== null && existingBaselineSeenAt > 0;
+    const streakAlreadyReached = Boolean(currentBroadcast?.streakIncreasedForStream);
+
+    let baselineValue = hasKnownBaseline ? existingBaseline : value;
+    let baselineSeenAt = hasKnownBaseline ? existingBaselineSeenAt : now;
+    let increasedForThisUpdate = false;
+    let unexpectedJumpForThisUpdate = false;
+    const hadUnexpectedJump = Boolean(currentBroadcast?.streakUnexpectedJumpForStream);
+
+    if (hasKnownBaseline && !streakAlreadyReached) {
+      if (value === existingBaseline + 1) {
+        increasedForThisUpdate = true;
+      } else if (value !== existingBaseline) {
+        unexpectedJumpForThisUpdate = value > existingBaseline + 1;
+        // Unexpected jump/drop: keep tracking, but do not mark a streak increase.
+        baselineValue = value;
+        baselineSeenAt = now;
+      }
+    }
+
+    const reachedForCurrentStream = (
+      streakAlreadyReached
+      || increasedForThisUpdate
+    );
+    const hasUnexpectedJumpForCurrentStream = reachedForCurrentStream
+      ? false
+      : (hadUnexpectedJump || unexpectedJumpForThisUpdate);
 
     const nextWatchStreakByChannel = {
       ...runtimeState.watchStreakByChannel,
       [channel]: {
         value,
-        increased,
-        seenAt: Date.now()
+        increased: reachedForCurrentStream,
+        unexpectedJump: hasUnexpectedJumpForCurrentStream,
+        seenAt: now,
+        broadcastStartedAt: normalizedStartedAt
       }
     };
     const nextBroadcastSessionsByChannel = {
       ...runtimeState.broadcastSessionsByChannel
     };
+    const nextLastBroadcastStatsByChannel = {
+      ...runtimeState.lastBroadcastStatsByChannel
+    };
 
     if (currentBroadcast) {
-      nextBroadcastSessionsByChannel[channel] = {
+      const nextBroadcast = {
         ...currentBroadcast,
-        streakIncreasedForStream: reachedForCurrentStream
+        streakValue: value,
+        streakSeenAt: now,
+        baselineStreakValue: baselineValue,
+        baselineStreakSeenAt: baselineSeenAt,
+        streakIncreasedForStream: reachedForCurrentStream,
+        streakUnexpectedJumpForStream: hasUnexpectedJumpForCurrentStream
       };
+      nextBroadcastSessionsByChannel[channel] = nextBroadcast;
+      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcast);
     }
 
     await writeRuntimeState({
       watchStreakByChannel: nextWatchStreakByChannel,
-      broadcastSessionsByChannel: nextBroadcastSessionsByChannel
+      broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
     });
     await logWorkerEvent("streak:updated", {
       channel,
       value,
-      reachedForCurrentStream
+      reachedForCurrentStream,
+      hasUnexpectedJumpForCurrentStream
     });
   }
 
@@ -274,6 +361,61 @@ export function createStreamSessionService({
     updateClaimAvailability,
     updateWatchStreak
   };
+}
+
+function createBroadcastSession({
+  estimatedStartedAt,
+  uptimeSeconds,
+  now
+}) {
+  return {
+    estimatedStartedAt,
+    lastUptimeSeconds: uptimeSeconds,
+    lastSeenAt: now,
+    claimCount: 0,
+    lastClaimAt: 0,
+    streakValue: null,
+    streakSeenAt: 0,
+    baselineStreakValue: null,
+    baselineStreakSeenAt: 0,
+    streakIncreasedForStream: false,
+    streakUnexpectedJumpForStream: false
+  };
+}
+
+function createLastBroadcastStats(session) {
+  const estimatedStartedAt = Math.round(Number(session?.estimatedStartedAt));
+  if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
+    return null;
+  }
+
+  return {
+    estimatedStartedAt,
+    lastSeenAt: Math.round(Number(session?.lastSeenAt) || 0),
+    lastUptimeSeconds: Math.max(0, Math.round(Number(session?.lastUptimeSeconds) || 0)),
+    endedAt: 0,
+    claimCount: Math.max(0, Math.floor(Number(session?.claimCount) || 0)),
+    lastClaimAt: Math.round(Number(session?.lastClaimAt) || 0),
+    streakValue: normalizeStreakValue(session?.streakValue),
+    streakSeenAt: Math.round(Number(session?.streakSeenAt) || 0),
+    baselineStreakValue: normalizeStreakValue(session?.baselineStreakValue),
+    baselineStreakSeenAt: Math.round(Number(session?.baselineStreakSeenAt) || 0),
+    streakIncreasedForStream: Boolean(session?.streakIncreasedForStream),
+    streakUnexpectedJumpForStream: Boolean(session?.streakUnexpectedJumpForStream)
+  };
+}
+
+function normalizeStreakValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = Math.floor(Number(value));
+  if (!Number.isInteger(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return normalized;
 }
 
 function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUptimeSeconds) {

@@ -3,10 +3,29 @@ import { getChannelsLiveStatus } from "./lib/liveStatus.js";
 const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
+const telemetryStatus = document.getElementById("telemetry-status");
+const telemetryExportButton = document.getElementById("telemetry-export");
+const telemetryClearButton = document.getElementById("telemetry-clear");
 const QUICK_POLL_INTERVAL_MS = 5000;
 const QUICK_POLL_WINDOW_MS = 30000;
 const SLOW_POLL_INTERVAL_MS = 60000;
 const RENDER_INTERVAL_MS = 1000;
+const RUNTIME_STATE_KEYS = [
+  "managedTabsByChannel",
+  "detachedUntilByChannel",
+  "watchSessionsByChannel",
+  "broadcastSessionsByChannel",
+  "lastBroadcastStatsByChannel",
+  "claimStatsByChannel",
+  "claimAvailabilityByChannel",
+  "playbackStateByChannel",
+  "watchStreakByChannel"
+];
+const SETTINGS_KEYS = [
+  "autoManage",
+  "maxStreams",
+  "importantChannels"
+];
 
 let latestSnapshot = null;
 let refreshIntervalId = 0;
@@ -14,11 +33,14 @@ let refreshWindowUntil = 0;
 let isRefreshing = false;
 let settingsUpdateInFlight = false;
 let watchToggleUpdateInFlight = false;
+let telemetryExportInFlight = false;
+let telemetryClearInFlight = false;
 
 void init();
 
 async function init() {
   bindEvents();
+  renderTelemetryStatus(null);
   window.setInterval(() => {
     renderCurrent();
   }, RENDER_INTERVAL_MS);
@@ -38,6 +60,17 @@ function bindEvents() {
     }
 
     await updateAutoManage(watchToggle.checked);
+  });
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    applyStorageChanges(changes, areaName);
+  });
+
+  telemetryExportButton?.addEventListener("click", () => {
+    void exportTelemetry();
+  });
+  telemetryClearButton?.addEventListener("click", () => {
+    void clearTelemetry();
   });
 }
 
@@ -60,7 +93,8 @@ async function refresh() {
     latestSnapshot = {
       settings: response.settings,
       runtimeState: response.runtimeState,
-      liveStatusByChannel
+      liveStatusByChannel,
+      telemetry: response.telemetry || null
     };
 
     renderCurrent();
@@ -92,6 +126,62 @@ function renderCurrent() {
   );
 }
 
+function applyStorageChanges(changes, areaName) {
+  if (!latestSnapshot || !changes || typeof changes !== "object") {
+    return;
+  }
+
+  let snapshotChanged = false;
+
+  if (areaName === "local") {
+    const nextRuntimeState = { ...latestSnapshot.runtimeState };
+    let runtimeChanged = false;
+
+    for (const key of RUNTIME_STATE_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(changes, key)) {
+        continue;
+      }
+
+      nextRuntimeState[key] = changes[key]?.newValue;
+      runtimeChanged = true;
+    }
+
+    if (runtimeChanged) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        runtimeState: nextRuntimeState
+      };
+      snapshotChanged = true;
+    }
+  }
+
+  if (areaName === "sync") {
+    const nextSettings = { ...latestSnapshot.settings };
+    let settingsChanged = false;
+
+    for (const key of SETTINGS_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(changes, key)) {
+        continue;
+      }
+
+      nextSettings[key] = changes[key]?.newValue;
+      settingsChanged = true;
+    }
+
+    if (settingsChanged) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        settings: nextSettings
+      };
+      snapshotChanged = true;
+    }
+  }
+
+  if (snapshotChanged) {
+    renderCurrent();
+  }
+}
+
 function render(settings, runtimeState, liveStatusByChannel) {
   watchToggle.checked = settings.autoManage;
   watchToggle.disabled = watchToggleUpdateInFlight;
@@ -110,6 +200,9 @@ function render(settings, runtimeState, liveStatusByChannel) {
     details.className = "channel-details";
     const streamStatus = liveStatusByChannel[entry.name];
     const isLive = streamStatus === "live";
+    const hasRuntimeActiveSession = hasActiveRuntimeSession(entry.name, runtimeState);
+    const channelBroadcastStats = getChannelBroadcastStats(entry.name, runtimeState);
+    const showStats = isLive || hasRuntimeActiveSession || Boolean(channelBroadcastStats);
 
     const status = document.createElement("span");
     status.className = "channel-status";
@@ -125,26 +218,28 @@ function render(settings, runtimeState, liveStatusByChannel) {
     label.appendChild(status);
     details.appendChild(name);
 
-    if (isLive) {
+    if (showStats) {
       const stats = document.createElement("div");
       stats.className = "channel-stats";
-      const claimElapsed = formatLastClaimDuration(runtimeState.claimStatsByChannel?.[entry.name]);
-      const watchtimeLabel = document.createElement("span");
-      watchtimeLabel.className = "channel-watchtime";
-      watchtimeLabel.textContent = claimElapsed;
-      stats.appendChild(watchtimeLabel);
-
-      const claimCount = getClaimCount(runtimeState.claimStatsByChannel?.[entry.name]);
+      const claimStats = getClaimStatsForDisplay(entry.name, runtimeState, channelBroadcastStats);
+      const claimCount = getClaimCount(claimStats);
       if (claimCount !== null) {
-        const claimLabel = document.createElement("span");
-        claimLabel.className = "channel-claims";
-        claimLabel.textContent = `🎁 ${claimCount}`;
-        stats.appendChild(claimLabel);
+        const claimCountLabel = document.createElement("span");
+        claimCountLabel.className = "channel-claims";
+        claimCountLabel.textContent = `🎁 ${claimCount}`;
+        stats.appendChild(claimCountLabel);
+
+        if (isLive) {
+          const claimMinutesLabel = document.createElement("span");
+          claimMinutesLabel.className = "channel-claim-minutes";
+          claimMinutesLabel.textContent = `(${formatLastClaimDuration(claimStats)})`;
+          stats.appendChild(claimMinutesLabel);
+        }
       }
 
       const streakLabelText = getWatchStreakLabel(
-        runtimeState.watchStreakByChannel?.[entry.name],
-        runtimeState.broadcastSessionsByChannel?.[entry.name]
+        getWatchStreakForDisplay(entry.name, runtimeState, channelBroadcastStats),
+        channelBroadcastStats
       );
       if (streakLabelText !== null) {
         const streakLabel = document.createElement("span");
@@ -156,7 +251,7 @@ function render(settings, runtimeState, liveStatusByChannel) {
       if (isClaimAvailable(runtimeState.claimAvailabilityByChannel?.[entry.name])) {
         const claimReadyLabel = document.createElement("span");
         claimReadyLabel.className = "channel-claim-ready";
-        claimReadyLabel.textContent = "🟡";
+        claimReadyLabel.textContent = "🔔";
         stats.appendChild(claimReadyLabel);
       }
 
@@ -191,6 +286,8 @@ function render(settings, runtimeState, liveStatusByChannel) {
     item.appendChild(controls);
     channelList.appendChild(item);
   });
+
+  renderTelemetryStatus(latestSnapshot?.telemetry || null);
 }
 
 function getChannelIndicator(status, playbackState) {
@@ -387,6 +484,118 @@ async function updateAutoManage(enabled) {
   }
 }
 
+function renderTelemetryStatus(telemetry) {
+  if (!telemetryStatus) {
+    return;
+  }
+
+  const eventCount = Math.max(0, Math.round(Number(telemetry?.eventCount) || 0));
+  const droppedCount = Math.max(0, Math.round(Number(telemetry?.droppedCount) || 0));
+  const updatedAt = telemetry?.updatedAt ? new Date(telemetry.updatedAt) : null;
+  const updatedAtLabel = updatedAt && Number.isFinite(updatedAt.getTime())
+    ? updatedAt.toLocaleTimeString()
+    : "n/a";
+
+  telemetryStatus.textContent = (
+    `Events: ${eventCount} | Verworfen: ${droppedCount} | Update: ${updatedAtLabel}`
+  );
+  if (telemetryExportButton) {
+    telemetryExportButton.disabled = telemetryExportInFlight;
+  }
+  if (telemetryClearButton) {
+    telemetryClearButton.disabled = telemetryClearInFlight;
+  }
+}
+
+async function exportTelemetry() {
+  if (telemetryExportInFlight) {
+    return;
+  }
+
+  telemetryExportInFlight = true;
+  renderTelemetryStatus(latestSnapshot?.telemetry || null);
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "telemetry:export"
+    });
+    if (!response?.ok || !response.snapshot) {
+      throw new Error("telemetry export failed");
+    }
+
+    const blob = new Blob([JSON.stringify(response.snapshot, null, 2)], {
+      type: "application/json"
+    });
+    const fileName = getTelemetryFileName();
+    const downloadUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = fileName;
+    anchor.click();
+    window.setTimeout(() => {
+      URL.revokeObjectURL(downloadUrl);
+    }, 2000);
+  } finally {
+    telemetryExportInFlight = false;
+    renderTelemetryStatus(latestSnapshot?.telemetry || null);
+  }
+}
+
+async function clearTelemetry() {
+  if (telemetryClearInFlight) {
+    return;
+  }
+
+  telemetryClearInFlight = true;
+  renderTelemetryStatus(latestSnapshot?.telemetry || null);
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "telemetry:clear"
+    });
+    if (!response?.ok) {
+      throw new Error("telemetry clear failed");
+    }
+
+    if (latestSnapshot) {
+      latestSnapshot = {
+        ...latestSnapshot,
+        telemetry: {
+          eventCount: 0,
+          droppedCount: Math.max(
+            0,
+            Math.round(Number(latestSnapshot.telemetry?.droppedCount) || 0)
+          ),
+          updatedAt: new Date().toISOString()
+        }
+      };
+      renderCurrent();
+    }
+
+    startRefreshWindow();
+    void refresh();
+  } finally {
+    telemetryClearInFlight = false;
+    renderTelemetryStatus(latestSnapshot?.telemetry || null);
+  }
+}
+
+function getTelemetryFileName() {
+  const now = new Date();
+  const datePart = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0")
+  ].join("-");
+  const timePart = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0")
+  ].join("-");
+
+  return `twitch-watch-guard-diagnostics-${datePart}_${timePart}.json`;
+}
+
 function normalizeChannels(channels) {
   return (Array.isArray(channels) ? channels : [])
     .map((entry) => ({
@@ -402,19 +611,12 @@ function normalizeChannels(channels) {
 function formatLastClaimDuration(claimStats) {
   const lastClaimAt = Number(claimStats?.lastClaimAt);
   if (!Number.isFinite(lastClaimAt) || lastClaimAt <= 0) {
-    return "0m";
+    return "0min";
   }
 
   const elapsedMs = Math.max(0, Date.now() - lastClaimAt);
   const elapsedMinutes = Math.floor(elapsedMs / 60000);
-  const hours = Math.floor(elapsedMinutes / 60);
-  const minutes = elapsedMinutes % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-  }
-
-  return `${minutes}m`;
+  return `${elapsedMinutes}min`;
 }
 
 function getClaimCount(stats) {
@@ -425,9 +627,19 @@ function getClaimCount(stats) {
 function getWatchStreakLabel(streakState, broadcastState) {
   const value = Number(streakState?.value);
   const reachedForCurrentStream = Boolean(broadcastState?.streakIncreasedForStream);
+  const hasUnexpectedJump = Boolean(
+    broadcastState?.streakUnexpectedJumpForStream || streakState?.unexpectedJump
+  );
 
   if (!Number.isInteger(value) || value < 0) {
+    if (hasUnexpectedJump) {
+      return "🔥 ⚠️";
+    }
     return reachedForCurrentStream ? "🔥 ✅" : null;
+  }
+
+  if (hasUnexpectedJump) {
+    return `🔥 ${value} ⚠️`;
   }
 
   return reachedForCurrentStream ? `🔥 ${value} ✅` : `🔥 ${value}`;
@@ -435,4 +647,97 @@ function getWatchStreakLabel(streakState, broadcastState) {
 
 function isClaimAvailable(state) {
   return Boolean(state?.available);
+}
+
+function getClaimStatsForDisplay(channel, runtimeState, broadcastStats) {
+  const runtimeStats = runtimeState?.claimStatsByChannel?.[channel];
+  const activeBroadcast = runtimeState?.broadcastSessionsByChannel?.[channel];
+
+  if (runtimeStats && isSameBroadcast(activeBroadcast, broadcastStats)) {
+    return runtimeStats;
+  }
+
+  if (!broadcastStats) {
+    return runtimeStats || null;
+  }
+
+  return {
+    count: Math.max(0, Math.floor(Number(broadcastStats.claimCount) || 0)),
+    lastClaimAt: Math.max(0, Math.round(Number(broadcastStats.lastClaimAt) || 0))
+  };
+}
+
+function getWatchStreakForDisplay(channel, runtimeState, broadcastStats) {
+  const runtimeStreak = runtimeState?.watchStreakByChannel?.[channel];
+  if (runtimeStreak && isWatchStreakForBroadcast(runtimeStreak, broadcastStats)) {
+    return runtimeStreak;
+  }
+
+  const streakValue = Math.floor(Number(broadcastStats?.streakValue));
+  if (!Number.isInteger(streakValue) || streakValue < 0) {
+    return runtimeStreak || null;
+  }
+
+  return {
+    value: streakValue,
+    increased: Boolean(broadcastStats?.streakIncreasedForStream),
+    unexpectedJump: Boolean(broadcastStats?.streakUnexpectedJumpForStream),
+    seenAt: Math.max(0, Math.round(Number(broadcastStats?.streakSeenAt) || 0))
+  };
+}
+
+function getChannelBroadcastStats(channel, runtimeState) {
+  if (!channel || !runtimeState || typeof runtimeState !== "object") {
+    return null;
+  }
+
+  const activeBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+  if (isValidBroadcastStats(activeBroadcast)) {
+    return activeBroadcast;
+  }
+
+  const lastBroadcast = runtimeState.lastBroadcastStatsByChannel?.[channel];
+  if (isValidBroadcastStats(lastBroadcast)) {
+    return lastBroadcast;
+  }
+
+  return null;
+}
+
+function isValidBroadcastStats(stats) {
+  const startedAt = Math.round(Number(stats?.estimatedStartedAt));
+  return Number.isFinite(startedAt) && startedAt > 0;
+}
+
+function isSameBroadcast(left, right) {
+  const leftStartedAt = Math.round(Number(left?.estimatedStartedAt));
+  const rightStartedAt = Math.round(Number(right?.estimatedStartedAt));
+  if (!Number.isFinite(leftStartedAt) || !Number.isFinite(rightStartedAt)) {
+    return false;
+  }
+
+  return leftStartedAt === rightStartedAt;
+}
+
+function isWatchStreakForBroadcast(streak, broadcastStats) {
+  const streakStartedAt = Math.round(Number(streak?.broadcastStartedAt));
+  const broadcastStartedAt = Math.round(Number(broadcastStats?.estimatedStartedAt));
+  if (!Number.isFinite(streakStartedAt) || !Number.isFinite(broadcastStartedAt)) {
+    return false;
+  }
+
+  return streakStartedAt > 0 && streakStartedAt === broadcastStartedAt;
+}
+
+function hasActiveRuntimeSession(channel, runtimeState) {
+  if (!channel || !runtimeState || typeof runtimeState !== "object") {
+    return false;
+  }
+
+  if (Number.isInteger(runtimeState.managedTabsByChannel?.[channel])) {
+    return true;
+  }
+
+  const broadcast = runtimeState.broadcastSessionsByChannel?.[channel];
+  return isValidBroadcastStats(broadcast);
 }

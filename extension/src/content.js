@@ -8,8 +8,13 @@ const UPTIME_SELECTOR_CANDIDATES = [
   ".live-time"
 ];
 const AUTO_CLAIM_MARKER = "twWatchGuardClaimHandled";
+const CHANNEL_STARTUP_GRACE_MS = 10000;
 const WATCH_STREAK_POLL_INTERVAL_MS = 300000;
-const WATCH_STREAK_MENU_TOGGLE_DELAY_MS = 160;
+const WATCH_STREAK_MENU_TOGGLE_DELAY_MS = 320;
+const WATCH_STREAK_SUMMARY_WAIT_TIMEOUT_MS = 8000;
+const WATCH_STREAK_DIALOG_WAIT_TIMEOUT_MS = 2500;
+const WATCH_STREAK_CARD_WAIT_TIMEOUT_MS = 2500;
+const WATCH_STREAK_WAIT_POLL_MS = 120;
 const WATCH_STREAK_ICON_PATH_FRAGMENT = "M5.295 8.05 10 2l3 4 2-3 3.8 5.067";
 const WATCH_STREAK_CHEVRON_PATH_FRAGMENT = "M13.793 12.207 8 6.414";
 const FAST_PLAYBACK_POLL_INTERVAL_MS = 5000;
@@ -17,6 +22,7 @@ const SLOW_PLAYBACK_POLL_INTERVAL_MS = 60000;
 const FAST_PLAYBACK_REPORT_TICKS = 6;
 const PLAYBACK_REPORT_DEBOUNCE_MS = 350;
 const RESUME_GAP_THRESHOLD_MS = 180000;
+const UNMUTE_SHORTCUT_SETTLE_MS = 120;
 const NETWORK_ERROR_RELOAD_COOLDOWN_MS = 120000;
 const NETWORK_ERROR_RELOAD_AT_KEY = "twWatchGuardLastNetworkErrorReloadAt";
 const PLAYBACK_STATE_EVENTS = [
@@ -42,6 +48,10 @@ let requestedStreakRefresh = 0;
 let lastWatchStreakReportKey = null;
 let streakProbeInFlight = false;
 let lastLifecycleHeartbeatAt = Date.now();
+let playResumeAttemptedForCurrentPause = false;
+let playResumeBlockedByPolicy = false;
+let channelAutomationReadyAt = 0;
+let startupSequenceTimeoutId = 0;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "watch:request-playback-state") {
@@ -102,25 +112,44 @@ async function syncButton() {
     return;
   }
 
+  const previousChannel = lastChannel;
   lastChannel = channel;
   lastReportedUptimeKey = null;
   lastClaimAvailabilityKey = null;
   lastPlaybackStateKey = null;
   lastWatchStreakReportKey = null;
+  playResumeAttemptedForCurrentPause = false;
+  playResumeBlockedByPolicy = false;
 
   if (!channel) {
+    sendTabTelemetry("channel:left", {
+      previousChannel
+    });
+    channelAutomationReadyAt = 0;
+    window.clearTimeout(startupSequenceTimeoutId);
+    startupSequenceTimeoutId = 0;
     detachPlaybackStateWatchers();
     removeButton();
     return;
   }
 
+  sendTabTelemetry("channel:entered", {
+    channel,
+    previousChannel,
+    startupGraceMs: CHANNEL_STARTUP_GRACE_MS
+  });
+
+  channelAutomationReadyAt = Date.now() + CHANNEL_STARTUP_GRACE_MS;
+  window.clearTimeout(startupSequenceTimeoutId);
+  startupSequenceTimeoutId = 0;
+
   await injectButton(channel);
   startPlaybackStatePolling();
   attachPlaybackStateWatchers(findPlayerVideo());
+  scheduleInitialChannelAutomation(channel);
   void reportWatchUptime();
   void tryAutoClaimBonus();
   void ensureManagedPlaybackState();
-  void reportWatchStreak();
 }
 
 async function injectButton(channel) {
@@ -288,6 +317,10 @@ function showToast(message) {
 showToast.timeoutId = 0;
 
 async function reportWatchUptime() {
+  if (isStartupDelayActive()) {
+    return;
+  }
+
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
     return;
@@ -317,6 +350,10 @@ async function reportWatchUptime() {
 }
 
 async function tryAutoClaimBonus() {
+  if (isStartupDelayActive()) {
+    return;
+  }
+
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
     return;
@@ -352,14 +389,25 @@ async function tryAutoClaimBonus() {
       type: "claim:record",
       channel
     });
+    sendTabTelemetry("claim:clicked", {
+      channel
+    });
     lastClaimAvailabilityKey = `${channel}:0`;
   } catch (error) {
     logTabError("claim:record failed after claim click", error);
+    sendTabTelemetry("claim:record-failed", {
+      channel,
+      message: error instanceof Error ? error.message : String(error)
+    });
     delete claimButton.dataset[AUTO_CLAIM_MARKER];
   }
 }
 
 async function reportWatchStreak() {
+  if (isStartupDelayActive()) {
+    return;
+  }
+
   if (streakProbeInFlight) {
     return;
   }
@@ -377,23 +425,43 @@ async function reportWatchStreak() {
       channel
     });
   } catch (_error) {
+    await sendStreakProbeLog(channel, "authorize-message-failed");
     return;
   }
 
   if (!authorization?.ok || !authorization.authorized) {
+    await sendStreakProbeLog(channel, "unauthorized");
     return;
   }
 
-  const summary = findCommunityPointsSummaryRoot();
-  const summaryToggleButton = findCommunityPointsSummaryToggleButton(summary);
-  if (!summaryToggleButton) {
+  const summaryData = await waitForResult(
+    () => {
+      const summary = findCommunityPointsSummaryRoot();
+      const button = findCommunityPointsSummaryToggleButton(summary);
+      return button ? { summary, button } : null;
+    },
+    WATCH_STREAK_SUMMARY_WAIT_TIMEOUT_MS
+  );
+  if (!summaryData?.button) {
+    const diagnostics = getSummaryToggleDiagnostics();
+    await sendStreakProbeLog(channel, "summary-toggle-not-found");
+    await sendStreakProbeLog(channel, "summary-toggle-context", {
+      summaryExists: diagnostics.summaryCount > 0,
+      summaryCount: diagnostics.summaryCount,
+      copoCount: diagnostics.copoCount,
+      bitsCount: diagnostics.bitsCount,
+      pointsButtonsCount: diagnostics.pointsButtonsCount
+    });
     return;
   }
+  const summaryToggleButton = summaryData.button;
 
   streakProbeInFlight = true;
 
   let streakValue = null;
   const wasOpenBefore = Boolean(findRewardCenterDialog());
+  let hadDialog = false;
+  let hadCard = false;
 
   try {
     if (!wasOpenBefore) {
@@ -401,19 +469,49 @@ async function reportWatchStreak() {
       await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
     }
 
-    const dialog = findRewardCenterDialog();
-    const card = findWatchStreakCard(dialog);
-    streakValue = extractWatchStreakValueFromCard(card);
-  } finally {
-    const isOpenAfterProbe = Boolean(findRewardCenterDialog());
-    if (isOpenAfterProbe && summaryToggleButton.isConnected) {
+    let dialog = await waitForResult(
+      () => findRewardCenterDialog(),
+      WATCH_STREAK_DIALOG_WAIT_TIMEOUT_MS
+    );
+    hadDialog = Boolean(dialog);
+
+    if (!dialog && !wasOpenBefore && summaryToggleButton.isConnected) {
       summaryToggleButton.click();
       await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+      dialog = await waitForResult(
+        () => findRewardCenterDialog(),
+        WATCH_STREAK_DIALOG_WAIT_TIMEOUT_MS
+      );
+      hadDialog = Boolean(dialog);
+    }
+
+    const card = dialog
+      ? await waitForResult(
+        () => findWatchStreakCard(dialog),
+        WATCH_STREAK_CARD_WAIT_TIMEOUT_MS
+      )
+      : null;
+    hadCard = Boolean(card);
+    streakValue = extractWatchStreakValueFromCard(card);
+  } finally {
+    const closed = await closeRewardCenterDialog(summaryToggleButton);
+    if (!closed) {
+      await sendStreakProbeLog(channel, "summary-close-failed");
     }
     streakProbeInFlight = false;
   }
 
   if (!Number.isInteger(streakValue) || streakValue < 0) {
+    console.warn(
+      TAB_LOG_PREFIX,
+      "streak could not be found",
+      { channel, wasOpenBefore, hadDialog, hadCard }
+    );
+    await sendStreakProbeLog(channel, "streak-could-not-be-found", {
+      wasOpenBefore,
+      hadDialog,
+      hadCard
+    });
     return;
   }
 
@@ -429,13 +527,19 @@ async function reportWatchStreak() {
       channel,
       value: streakValue
     });
-  } catch (_error) {
-    // Ignore transient extension reload gaps.
+  } catch (error) {
+    await sendStreakProbeLog(channel, "streak-report-message-failed", {
+      message: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 
 async function ensureManagedPlaybackState() {
   touchLifecycleHeartbeat();
+  if (isStartupDelayActive()) {
+    return;
+  }
+
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
     return;
@@ -457,6 +561,9 @@ async function ensureManagedPlaybackState() {
   }
 
   if (shouldReloadForNetworkError2000()) {
+    sendTabTelemetry("playback:reload-network-error-2000", {
+      channel
+    });
     window.location.reload();
     return;
   }
@@ -466,46 +573,55 @@ async function ensureManagedPlaybackState() {
     return;
   }
 
-  if (needsPlaybackResume(video)) {
+  if (!needsPlaybackResume(video)) {
+    playResumeAttemptedForCurrentPause = false;
+    playResumeBlockedByPolicy = false;
+  }
+
+  if (shouldAttemptPlaybackResume(video)) {
     try {
+      playResumeAttemptedForCurrentPause = true;
       await video.play();
+      playResumeAttemptedForCurrentPause = false;
+      playResumeBlockedByPolicy = false;
       await chrome.runtime.sendMessage({
         type: "watch:playback-resumed",
         channel
       });
+      sendTabTelemetry("playback:resumed", {
+        channel
+      });
     } catch (error) {
-      logTabError("video.play() failed while resuming playback", error);
-      // Playback resume can still be blocked by page/player state.
+      if (isAutoplayInteractionError(error)) {
+        playResumeBlockedByPolicy = true;
+        sendTabTelemetry("playback:resume-blocked-policy", {
+          channel
+        });
+      } else {
+        logTabError("video.play() failed while resuming playback", error);
+      }
+      // Playback resume can still be blocked by browser policy or page/player state.
     }
   }
 
-  if (!video.muted) {
-    await reportManagedPlaybackStateForVideo(channel, video);
-    return;
-  }
-
-  const shortcutTriggered = attemptUnmuteWithShortcut();
-  if (!shortcutTriggered) {
-    await reportManagedPlaybackStateForVideo(channel, video);
-    return;
-  }
-
-  try {
-    await chrome.runtime.sendMessage({
-      type: "watch:playback-corrected",
-      channel
-    });
-  } catch (error) {
-    logTabError("watch:playback-corrected message failed", error);
-    // Ignore transient extension reload gaps.
-    await reportManagedPlaybackStateForVideo(channel, video);
-    return;
+  if (video.muted) {
+    const unmutedAfterResume = await ensureVideoUnmutedWithShortcut(video);
+    if (unmutedAfterResume) {
+      sendTabTelemetry("playback:unmuted-shortcut", {
+        channel
+      });
+      await sendPlaybackCorrected(channel);
+    }
   }
 
   await reportManagedPlaybackStateForVideo(channel, video);
 }
 
 async function reportManagedPlaybackState() {
+  if (isStartupDelayActive()) {
+    return;
+  }
+
   const channel = getChannelFromLocation(window.location.pathname);
   if (!channel) {
     return;
@@ -554,6 +670,14 @@ async function reportManagedPlaybackStateForVideo(channel, video) {
   }
 
   lastPlaybackStateKey = dedupeKey;
+  sendTabTelemetry("playback:state-change", {
+    channel,
+    state: playbackState,
+    paused: video.paused,
+    muted: video.muted,
+    ended: video.ended,
+    hidden: document.hidden
+  });
 
   try {
     await chrome.runtime.sendMessage({
@@ -636,26 +760,61 @@ function findClaimButton() {
 }
 
 function findCommunityPointsSummaryRoot() {
-  const summary = document.querySelector("div[data-test-selector='community-points-summary']");
+  const summary = document.querySelector("[data-test-selector='community-points-summary']");
   return summary instanceof HTMLElement ? summary : null;
 }
 
 function findCommunityPointsSummaryToggleButton(summary) {
-  if (!(summary instanceof HTMLElement)) {
-    return null;
+  const roots = [];
+  if (summary instanceof HTMLElement) {
+    roots.push(summary);
+  }
+  roots.push(document);
+
+  for (const root of roots) {
+    const byCopoBalance = root.querySelector("[data-test-selector='copo-balance-string']");
+    const copoButton = byCopoBalance?.closest("button");
+    if (copoButton instanceof HTMLButtonElement) {
+      return copoButton;
+    }
+
+    const byBitsBalance = root.querySelector("[data-test-selector='bits-balance-string']");
+    const bitsButton = byBitsBalance?.closest("button");
+    if (bitsButton instanceof HTMLButtonElement) {
+      return bitsButton;
+    }
+
+    const pointsAriaButtons = [...root.querySelectorAll("button")]
+      .filter((button) => button instanceof HTMLButtonElement)
+      .filter((button) => /points/i.test(String(button.getAttribute("aria-label") || "")));
+
+    const enabledPointsButton = pointsAriaButtons.find((button) => !button.disabled);
+    if (enabledPointsButton) {
+      return enabledPointsButton;
+    }
+
+    if (pointsAriaButtons.length > 0) {
+      return pointsAriaButtons[0];
+    }
   }
 
-  const buttons = [...summary.querySelectorAll("button:not([disabled])")]
-    .filter((button) => button instanceof HTMLButtonElement);
+  return null;
+}
 
-  if (buttons.length === 0) {
-    return null;
-  }
+function getSummaryToggleDiagnostics() {
+  const summaries = document.querySelectorAll("[data-test-selector='community-points-summary']");
+  const copo = document.querySelectorAll("[data-test-selector='copo-balance-string']");
+  const bits = document.querySelectorAll("[data-test-selector='bits-balance-string']");
+  const pointsButtons = [...document.querySelectorAll("button")]
+    .filter((button) => button instanceof HTMLButtonElement)
+    .filter((button) => /points/i.test(String(button.getAttribute("aria-label") || "")));
 
-  const preferred = buttons.find(
-    (button) => button.querySelector("[data-test-selector='copo-balance-string']")
-  );
-  return preferred || buttons[0];
+  return {
+    summaryCount: summaries.length,
+    copoCount: copo.length,
+    bitsCount: bits.length,
+    pointsButtonsCount: pointsButtons.length
+  };
 }
 
 function findRewardCenterDialog() {
@@ -677,6 +836,84 @@ function findRewardCenterDialog() {
   }
 
   return null;
+}
+
+async function closeRewardCenterDialog(summaryToggleButton) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const dialog = findRewardCenterDialog();
+    if (!dialog) {
+      return true;
+    }
+
+    if (
+      summaryToggleButton instanceof HTMLButtonElement
+      && summaryToggleButton.isConnected
+      && !summaryToggleButton.disabled
+    ) {
+      summaryToggleButton.click();
+      await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+      if (!findRewardCenterDialog()) {
+        return true;
+      }
+    }
+
+    const closeButton = findRewardCenterCloseButton(dialog);
+    if (closeButton) {
+      closeButton.click();
+      await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+      if (!findRewardCenterDialog()) {
+        return true;
+      }
+    }
+
+    dispatchEscapeKey();
+    await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+    if (!findRewardCenterDialog()) {
+      return true;
+    }
+  }
+
+  return !findRewardCenterDialog();
+}
+
+function findRewardCenterCloseButton(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return null;
+  }
+
+  const candidates = [...dialog.querySelectorAll("button")]
+    .filter((button) => button instanceof HTMLButtonElement);
+  for (const button of candidates) {
+    const ariaLabel = String(button.getAttribute("aria-label") || "").toLowerCase();
+    const dataTarget = String(button.getAttribute("data-a-target") || "").toLowerCase();
+    if (
+      ariaLabel.includes("close")
+      || ariaLabel.includes("schlie")
+      || dataTarget.includes("close")
+    ) {
+      return button;
+    }
+  }
+
+  return null;
+}
+
+function dispatchEscapeKey() {
+  const target = findPlaybackShortcutTarget() || document.body;
+  if (!target) {
+    return;
+  }
+
+  const keyboardEventInit = {
+    key: "Escape",
+    code: "Escape",
+    keyCode: 27,
+    which: 27,
+    bubbles: true,
+    cancelable: true
+  };
+  target.dispatchEvent(new KeyboardEvent("keydown", keyboardEventInit));
+  target.dispatchEvent(new KeyboardEvent("keyup", keyboardEventInit));
 }
 
 function findWatchStreakCard(dialog) {
@@ -772,51 +1009,66 @@ function extractWatchStreakValueFromCard(card) {
     return null;
   }
 
+  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
   const iconAnchors = findWatchStreakIconAnchors(card);
   for (const iconAnchor of iconAnchors) {
-    let cursor = iconAnchor.parentElement;
-    let depth = 0;
-
-    while (cursor && cursor !== card && depth < 5) {
-      const candidateValue = extractFirstInteger(cursor.textContent);
-      if (candidateValue !== null) {
-        return candidateValue;
-      }
-
-      cursor = cursor.parentElement;
-      depth += 1;
+    const nearbyValue = extractWatchStreakValueNearIcon(iconAnchor, card);
+    if (nearbyValue !== null) {
+      return nearbyValue;
     }
   }
 
-  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
   const headerRegion = progressBar instanceof Element
     ? progressBar.closest("div")?.previousElementSibling
     : null;
   if (headerRegion instanceof HTMLElement) {
-    const headerValue = extractFirstInteger(headerRegion.textContent);
+    const headerValue = extractBestStreakInteger(headerRegion.textContent);
     if (headerValue !== null) {
       return headerValue;
     }
   }
 
-  return extractFirstInteger(card.textContent);
+  return null;
 }
 
-function extractFirstInteger(text) {
+function extractWatchStreakValueNearIcon(iconAnchor, card) {
+  let cursor = iconAnchor instanceof Element ? iconAnchor.parentElement : null;
+  let depth = 0;
+
+  while (cursor && cursor !== card && depth < 6) {
+    const candidateValue = extractBestStreakInteger(cursor.textContent);
+    if (candidateValue !== null) {
+      return candidateValue;
+    }
+
+    cursor = cursor.parentElement;
+    depth += 1;
+  }
+
+  return null;
+}
+
+function extractBestStreakInteger(text) {
   const source = String(text || "");
   const matches = source.match(/\d{1,4}/g);
   if (!matches) {
     return null;
   }
 
-  for (const token of matches) {
-    const value = Number.parseInt(token, 10);
-    if (Number.isInteger(value) && value >= 0) {
+  const values = matches
+    .map((token) => Number.parseInt(token, 10))
+    .filter((value) => Number.isInteger(value) && value >= 0 && value <= 366);
+  if (values.length === 0) {
+    return null;
+  }
+
+  for (const value of values) {
+    if (value > 0) {
       return value;
     }
   }
 
-  return null;
+  return 0;
 }
 
 function normalizePathData(pathData) {
@@ -833,6 +1085,30 @@ function findPlayerVideo() {
 
 function needsPlaybackResume(video) {
   return video.paused && !video.ended;
+}
+
+function shouldAttemptPlaybackResume(video) {
+  if (!(video instanceof HTMLVideoElement)) {
+    return false;
+  }
+
+  if (!needsPlaybackResume(video)) {
+    return false;
+  }
+
+  if (document.hidden || document.visibilityState !== "visible") {
+    return false;
+  }
+
+  if (playResumeAttemptedForCurrentPause) {
+    return false;
+  }
+
+  if (playResumeBlockedByPolicy) {
+    return false;
+  }
+
+  return true;
 }
 
 function getPlaybackState(video) {
@@ -883,6 +1159,34 @@ function attemptUnmuteWithShortcut() {
   return true;
 }
 
+async function ensureVideoUnmutedWithShortcut(video) {
+  if (!(video instanceof HTMLVideoElement)) {
+    return false;
+  }
+
+  if (!video.muted) {
+    return true;
+  }
+
+  const firstAttemptTriggered = attemptUnmuteWithShortcut();
+  if (!firstAttemptTriggered) {
+    return false;
+  }
+
+  await wait(UNMUTE_SHORTCUT_SETTLE_MS);
+  if (!video.muted) {
+    return true;
+  }
+
+  const secondAttemptTriggered = attemptUnmuteWithShortcut();
+  if (!secondAttemptTriggered) {
+    return false;
+  }
+
+  await wait(UNMUTE_SHORTCUT_SETTLE_MS);
+  return !video.muted;
+}
+
 function findPlaybackShortcutTarget() {
   const candidates = [
     document.querySelector("[data-a-target='player-overlay-click-handler']"),
@@ -926,10 +1230,116 @@ function wait(ms) {
   });
 }
 
+function isStartupDelayActive() {
+  return channelAutomationReadyAt > 0 && Date.now() < channelAutomationReadyAt;
+}
+
+function scheduleInitialChannelAutomation(channel) {
+  const delayMs = Math.max(0, channelAutomationReadyAt - Date.now());
+  window.clearTimeout(startupSequenceTimeoutId);
+  startupSequenceTimeoutId = window.setTimeout(() => {
+    startupSequenceTimeoutId = 0;
+    if (channel !== getChannelFromLocation(window.location.pathname)) {
+      return;
+    }
+    void runInitialChannelAutomation();
+  }, delayMs);
+}
+
+async function runInitialChannelAutomation() {
+  sendTabTelemetry("startup:automation-triggered", {});
+  try {
+    await reportWatchStreak();
+  } catch (error) {
+    logTabError("initial streak probe failed", error);
+    const channel = getChannelFromLocation(window.location.pathname);
+    if (channel) {
+      await sendStreakProbeLog(channel, "initial-streak-probe-failed", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  void ensureManagedPlaybackState();
+  void tryAutoClaimBonus();
+  void reportWatchUptime();
+}
+
+async function waitForResult(readValue, timeoutMs) {
+  const timeout = Math.max(0, Math.floor(Number(timeoutMs) || 0));
+  const readCurrentValue = () => {
+    try {
+      return readValue();
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const immediate = readCurrentValue();
+  if (immediate) {
+    return immediate;
+  }
+
+  if (
+    timeout <= 0 ||
+    typeof MutationObserver === "undefined" ||
+    !(document.documentElement instanceof Element)
+  ) {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let observer = null;
+
+    const finalize = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (observer) {
+        observer.disconnect();
+      }
+      window.clearTimeout(timeoutId);
+      window.clearInterval(pollIntervalId);
+      resolve(value);
+    };
+
+    const tryResolve = () => {
+      const candidate = readCurrentValue();
+      if (candidate) {
+        finalize(candidate);
+      }
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      finalize(null);
+    }, timeout);
+
+    const pollIntervalId = window.setInterval(() => {
+      tryResolve();
+    }, WATCH_STREAK_WAIT_POLL_MS);
+
+    try {
+      observer = new MutationObserver(() => {
+        tryResolve();
+      });
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+    } catch (_error) {
+      // Polling fallback stays active when observer setup fails.
+    }
+  });
+}
+
 function setupResumeRecoveryWatchers() {
   window.addEventListener("visibilitychange", onResumeSignal, { passive: true });
   window.addEventListener("pageshow", onResumeSignal, { passive: true });
   window.addEventListener("focus", onResumeSignal, { passive: true });
+  window.addEventListener("pointerdown", onUserInteractionSignal, { passive: true });
+  window.addEventListener("keydown", onUserInteractionSignal);
 }
 
 function onResumeSignal() {
@@ -942,6 +1352,9 @@ function onResumeSignal() {
   }
 
   if (resumeGapMs >= RESUME_GAP_THRESHOLD_MS && shouldReloadForNetworkError2000()) {
+    sendTabTelemetry("resume:reload-network-error-2000", {
+      resumeGapMs
+    });
     window.location.reload();
     return;
   }
@@ -949,6 +1362,16 @@ function onResumeSignal() {
   void syncButton();
   void reportWatchUptime();
   void tryAutoClaimBonus();
+  void ensureManagedPlaybackState();
+}
+
+function onUserInteractionSignal() {
+  if (!playResumeBlockedByPolicy && !playResumeAttemptedForCurrentPause) {
+    return;
+  }
+
+  playResumeBlockedByPolicy = false;
+  playResumeAttemptedForCurrentPause = false;
   void ensureManagedPlaybackState();
 }
 
@@ -1094,10 +1517,80 @@ function parseDurationToken(value) {
 }
 
 function logTabError(context, error) {
+  sendTabTelemetry("tab:error", {
+    context,
+    name: String(error?.name || ""),
+    message: error instanceof Error ? error.message : String(error)
+  });
+
   console.error(
     TAB_LOG_PREFIX,
     context,
     error instanceof Error ? error.message : String(error),
     error
   );
+}
+
+function isAutoplayInteractionError(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  if (name === "NotAllowedError") {
+    return true;
+  }
+
+  return /user (didn'?t|did not) interact/i.test(message);
+}
+
+async function sendPlaybackCorrected(channel) {
+  sendTabTelemetry("playback:corrected", {
+    channel
+  });
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "watch:playback-corrected",
+      channel
+    });
+  } catch (error) {
+    logTabError("watch:playback-corrected message failed", error);
+  }
+}
+
+function sendTabTelemetry(event, details = {}) {
+  const normalizedEvent = String(event || "").toLowerCase();
+  if (!normalizedEvent) {
+    return;
+  }
+
+  const baseDetails = details && typeof details === "object" ? details : {};
+  void chrome.runtime.sendMessage({
+    type: "telemetry:tab-event",
+    event: normalizedEvent,
+    details: {
+      ...baseDetails,
+      path: window.location.pathname,
+      visibilityState: document.visibilityState
+    }
+  }).catch(() => {
+    // Ignore transient extension reload gaps.
+  });
+}
+
+async function sendStreakProbeLog(channel, reason, details = {}) {
+  const normalizedChannel = String(channel || "").toLowerCase();
+  const normalizedReason = String(reason || "").toLowerCase();
+  if (!normalizedChannel || !normalizedReason) {
+    return;
+  }
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: "streak:probe-log",
+      channel: normalizedChannel,
+      reason: normalizedReason,
+      details
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
 }

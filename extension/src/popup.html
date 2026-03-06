@@ -21,6 +21,19 @@
         <ul id="channel-list" class="channel-list"></ul>
         <p id="empty-state" class="empty-state">Noch keine Channels markiert.</p>
       </section>
+
+      <section class="panel panel-debug">
+        <div class="section-title">Diagnose</div>
+        <p id="telemetry-status" class="telemetry-status">Logs werden geladen...</p>
+        <div class="telemetry-actions">
+          <button id="telemetry-export" type="button" class="control-button telemetry-button">
+            Export JSON
+          </button>
+          <button id="telemetry-clear" type="button" class="control-button telemetry-button">
+            Logs leeren
+          </button>
+        </div>
+      </section>
     </main>
 
     <script type="module" src="popup.js"></script>

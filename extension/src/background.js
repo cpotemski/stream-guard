@@ -15,6 +15,7 @@ import { createRuntimeStore } from "./background/runtimeStore.js";
 import { getExistingTab, getChannelFromTab } from "./background/tabUtils.js";
 import { createWorkerLogger } from "./background/workerLogger.js";
 import { createWatchStateService } from "./background/watchStateService.js";
+import { createTelemetryStore } from "./background/telemetryStore.js";
 
 const ORCHESTRATOR_ALARM = "orchestrator-tick";
 const ORCHESTRATOR_LAST_TICK_AT_KEY = "orchestratorLastTickAt";
@@ -25,8 +26,12 @@ const WAKE_GAP_THRESHOLD_MS = 180000;
 const BROADCAST_SESSION_RETENTION_MS = 900000;
 const DETACHED_REOPEN_COOLDOWN_MS = 300000;
 const WORKER_LOG_PREFIX = "[TW Watch Guard]";
+const TELEMETRY_MAX_EVENTS = 5000;
 
-const workerLogger = createWorkerLogger(WORKER_LOG_PREFIX);
+const telemetryStore = createTelemetryStore({
+  maxEvents: TELEMETRY_MAX_EVENTS
+});
+const workerLogger = createWorkerLogger(WORKER_LOG_PREFIX, telemetryStore.append);
 const runtimeStore = createRuntimeStore({
   getSettings,
   setSettings,
@@ -106,7 +111,22 @@ const handleMessage = createMessageRouter({
   canManageChannelForTab: authorizationService.canManageChannelForTab,
   recordClaim: streamSessionService.recordClaim,
   updateClaimAvailability: streamSessionService.updateClaimAvailability,
-  updateWatchStreak: streamSessionService.updateWatchStreak
+  updateWatchStreak: streamSessionService.updateWatchStreak,
+  logTabTelemetryEvent: async ({ event, details, sender }) => {
+    await telemetryStore.append({
+      source: "tab",
+      event,
+      details,
+      context: {
+        tabId: sender?.tab?.id ?? null,
+        frameId: sender?.frameId ?? null,
+        url: sender?.tab?.url || null
+      }
+    });
+  },
+  exportTelemetrySnapshot: telemetryStore.exportSnapshot,
+  clearTelemetry: telemetryStore.clear,
+  getTelemetryStats: telemetryStore.getStats
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -122,9 +142,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const messageType = String(message?.type || "");
   void handleMessage(message, sender)
     .then((payload) => sendResponse({ ok: true, ...payload }))
     .catch((error) => {
+      void telemetryStore.append({
+        source: "worker",
+        event: "message:error",
+        details: {
+          messageType,
+          message: error instanceof Error ? error.message : String(error)
+        },
+        context: {
+          tabId: sender?.tab?.id ?? null
+        }
+      });
+
       sendResponse({
         ok: false,
         error: error instanceof Error ? error.message : String(error)

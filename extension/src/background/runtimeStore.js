@@ -10,6 +10,7 @@ export function createRuntimeStore({
   let cachedSettingsExpiresAt = 0;
   let cachedRuntimeState = null;
   let cachedRuntimeStateExpiresAt = 0;
+  let runtimeWriteChain = Promise.resolve();
   let mutateHook = typeof onStateMutated === "function" ? onStateMutated : () => {};
 
   async function readSettingsFresh() {
@@ -49,11 +50,17 @@ export function createRuntimeStore({
   }
 
   async function writeRuntimeState(partialState) {
-    const runtimeState = await setRuntimeState(partialState);
-    cachedRuntimeState = runtimeState;
-    cachedRuntimeStateExpiresAt = Date.now() + stateCacheTtlMs;
-    mutateHook();
-    return runtimeState;
+    const runWrite = async () => {
+      const runtimeState = await setRuntimeState(partialState);
+      cachedRuntimeState = runtimeState;
+      cachedRuntimeStateExpiresAt = Date.now() + stateCacheTtlMs;
+      mutateHook();
+      return runtimeState;
+    };
+
+    const queuedWrite = runtimeWriteChain.then(runWrite, runWrite);
+    runtimeWriteChain = queuedWrite.catch(() => {});
+    return queuedWrite;
   }
 
   function setOnStateMutated(nextHook) {

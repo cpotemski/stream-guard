@@ -47,6 +47,7 @@ export function createTabLifecycleService({
     const nextDetachedUntilByChannel = { ...runtimeState.detachedUntilByChannel };
     const nextWatchSessionsByChannel = { ...runtimeState.watchSessionsByChannel };
     const nextBroadcastSessionsByChannel = { ...runtimeState.broadcastSessionsByChannel };
+    const nextLastBroadcastStatsByChannel = { ...runtimeState.lastBroadcastStatsByChannel };
     const nextClaimStatsByChannel = { ...runtimeState.claimStatsByChannel };
     const nextClaimAvailabilityByChannel = { ...runtimeState.claimAvailabilityByChannel };
     const nextPlaybackStateByChannel = { ...runtimeState.playbackStateByChannel };
@@ -70,6 +71,12 @@ export function createTabLifecycleService({
           keepRecentBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
+        markBroadcastEnded(
+          nextLastBroadcastStatsByChannel,
+          channel,
+          nextBroadcastSessionsByChannel[channel],
+          now
+        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -94,6 +101,12 @@ export function createTabLifecycleService({
           tabId,
           keepRecentBroadcastSession
         });
+        markBroadcastEnded(
+          nextLastBroadcastStatsByChannel,
+          channel,
+          nextBroadcastSessionsByChannel[channel],
+          now
+        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -132,6 +145,12 @@ export function createTabLifecycleService({
           keepRecentBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
+        markBroadcastEnded(
+          nextLastBroadcastStatsByChannel,
+          channel,
+          nextBroadcastSessionsByChannel[channel],
+          now
+        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -264,6 +283,7 @@ export function createTabLifecycleService({
       detachedUntilByChannel: nextDetachedUntilByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       playbackStateByChannel: nextPlaybackStateByChannel,
@@ -283,6 +303,7 @@ export function createTabLifecycleService({
       detachedUntilByChannel: nextDetachedUntilByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       playbackStateByChannel: nextPlaybackStateByChannel,
@@ -393,4 +414,52 @@ export function createTabLifecycleService({
     recoverManagedTabsAfterWake,
     requestWatchStreakForManagedTab
   };
+}
+
+function markBroadcastEnded(nextLastBroadcastStatsByChannel, channel, broadcastSession, endedAt) {
+  if (!channel || !broadcastSession || typeof broadcastSession !== "object") {
+    return;
+  }
+
+  const estimatedStartedAt = Math.round(Number(broadcastSession.estimatedStartedAt));
+  if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
+    return;
+  }
+
+  const existing = nextLastBroadcastStatsByChannel[channel];
+  const normalizedEndedAt = Math.max(0, Math.round(Number(endedAt) || 0));
+  nextLastBroadcastStatsByChannel[channel] = {
+    estimatedStartedAt,
+    lastSeenAt: Math.max(0, Math.round(Number(broadcastSession.lastSeenAt) || 0)),
+    lastUptimeSeconds: Math.max(0, Math.round(Number(broadcastSession.lastUptimeSeconds) || 0)),
+    endedAt: normalizedEndedAt,
+    claimCount: Math.max(0, Math.floor(Number(broadcastSession.claimCount) || 0)),
+    lastClaimAt: Math.max(0, Math.round(Number(broadcastSession.lastClaimAt) || 0)),
+    streakValue: normalizeStreakValue(broadcastSession.streakValue),
+    streakSeenAt: Math.max(0, Math.round(Number(broadcastSession.streakSeenAt) || 0)),
+    baselineStreakValue: normalizeStreakValue(broadcastSession.baselineStreakValue),
+    baselineStreakSeenAt: Math.max(
+      0,
+      Math.round(Number(broadcastSession.baselineStreakSeenAt) || 0)
+    ),
+    streakIncreasedForStream: Boolean(
+      broadcastSession.streakIncreasedForStream || existing?.streakIncreasedForStream
+    ),
+    streakUnexpectedJumpForStream: Boolean(
+      broadcastSession.streakUnexpectedJumpForStream || existing?.streakUnexpectedJumpForStream
+    )
+  };
+}
+
+function normalizeStreakValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = Math.floor(Number(value));
+  if (!Number.isInteger(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return normalized;
 }

@@ -18,6 +18,7 @@ export function createWatchStateService({
       detachedUntilByChannel: {},
       watchSessionsByChannel: {},
       broadcastSessionsByChannel: {},
+      lastBroadcastStatsByChannel: {},
       claimStatsByChannel: {},
       claimAvailabilityByChannel: {},
       playbackStateByChannel: {},

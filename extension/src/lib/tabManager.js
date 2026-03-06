@@ -1,5 +1,9 @@
 const WATCH_GROUP_TITLE = "TW Watch";
 const WATCH_GROUP_COLOR = "purple";
+const TAB_PRIME_DURATION_MS = 20000;
+let tabPrimeInFlight = null;
+const pendingPrimeTabIds = [];
+const pendingPrimeSet = new Set();
 
 export async function openWatchTab(channel) {
   const targetChannel = String(channel || "").toLowerCase();
@@ -17,6 +21,7 @@ export async function openWatchTab(channel) {
   }
 
   await ensureWatchGroup([tab.id]);
+  void requestTabPrime(tab.id);
   return tab.id;
 }
 
@@ -64,4 +69,49 @@ async function findWatchGroupId() {
   const groups = await chrome.tabGroups.query({ title: WATCH_GROUP_TITLE });
   const group = groups.find((entry) => Number.isInteger(entry?.id));
   return group?.id ?? null;
+}
+
+function requestTabPrime(createdTabId) {
+  if (!Number.isInteger(createdTabId) || pendingPrimeSet.has(createdTabId)) {
+    return;
+  }
+
+  pendingPrimeTabIds.push(createdTabId);
+  pendingPrimeSet.add(createdTabId);
+
+  if (tabPrimeInFlight) {
+    return;
+  }
+
+  tabPrimeInFlight = runPrimeQueue().finally(() => {
+    tabPrimeInFlight = null;
+  });
+}
+
+async function runPrimeQueue() {
+  while (pendingPrimeTabIds.length > 0) {
+    const nextTabId = pendingPrimeTabIds.shift();
+    pendingPrimeSet.delete(nextTabId);
+    await primeTab(nextTabId);
+  }
+}
+
+async function primeTab(createdTabId) {
+  if (!Number.isInteger(createdTabId)) {
+    return;
+  }
+
+  try {
+    await chrome.tabs.update(createdTabId, { active: true });
+  } catch {
+    return;
+  }
+
+  await delay(TAB_PRIME_DURATION_MS);
+}
+
+function delay(durationMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 }
