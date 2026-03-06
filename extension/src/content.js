@@ -761,7 +761,11 @@ async function reportWatchStreak() {
   let streakValue = null;
   const wasOpenBefore = Boolean(findRewardCenterDialog());
   let hadDialog = false;
-  let hadCard = false;
+  let hadLegacyCard = false;
+  let hadPrimaryContainer = false;
+  let parserSource = "none";
+  let primaryValue = null;
+  let fallbackValue = null;
 
   try {
     if (!wasOpenBefore) {
@@ -785,34 +789,75 @@ async function reportWatchStreak() {
       hadDialog = Boolean(dialog);
     }
 
-    const card = dialog
+    const parserResult = dialog
       ? await waitForResult(
-        () => findWatchStreakCard(dialog),
+        () => {
+          const result = extractWatchStreakValueFromDialog(dialog);
+          if (result.hadPrimaryContainer || result.hadLegacyCard) {
+            return result;
+          }
+          return null;
+        },
         WATCH_STREAK_CARD_WAIT_TIMEOUT_MS
       )
       : null;
-    hadCard = Boolean(card);
-    streakValue = extractWatchStreakValueFromCard(card);
+    streakValue = parserResult?.value ?? null;
+    hadLegacyCard = Boolean(parserResult?.hadLegacyCard);
+    hadPrimaryContainer = Boolean(parserResult?.hadPrimaryContainer);
+    parserSource = parserResult?.source || "none";
+    primaryValue = parserResult?.primaryValue ?? null;
+    fallbackValue = parserResult?.fallbackValue ?? null;
   } finally {
-    const closed = await closeRewardCenterDialog(summaryToggleButton);
+    const closed = await closeRewardCenterDialog();
     if (!closed) {
       await sendStreakProbeLog(channel, "summary-close-failed");
     }
     streakProbeInFlight = false;
   }
 
+  if (
+    Number.isInteger(primaryValue)
+    && primaryValue >= 0
+    && Number.isInteger(fallbackValue)
+    && fallbackValue >= 0
+    && primaryValue !== fallbackValue
+  ) {
+    await sendStreakProbeLog(channel, "streak-parser-conflict", {
+      primaryValue,
+      fallbackValue
+    });
+  }
+
   if (!Number.isInteger(streakValue) || streakValue < 0) {
     console.warn(
       TAB_LOG_PREFIX,
       "streak could not be found",
-      { channel, wasOpenBefore, hadDialog, hadCard }
+      { channel, wasOpenBefore, hadDialog, hadLegacyCard, hadPrimaryContainer }
     );
+    await sendStreakProbeLog(channel, "streak-no-valid-candidate", {
+      hadPrimaryContainer,
+      hadLegacyCard,
+      primaryValue,
+      fallbackValue
+    });
     await sendStreakProbeLog(channel, "streak-could-not-be-found", {
       wasOpenBefore,
       hadDialog,
-      hadCard
+      hadLegacyCard,
+      hadPrimaryContainer
     });
     return;
+  }
+
+  if (parserSource === "primary") {
+    await sendStreakProbeLog(channel, "streak-primary-used", {
+      value: streakValue,
+      fallbackValue
+    });
+  } else if (parserSource === "fallback") {
+    await sendStreakProbeLog(channel, "streak-fallback-used", {
+      value: streakValue
+    });
   }
 
   const dedupeKey = `${channel}:${streakValue}`;
@@ -1124,23 +1169,11 @@ function findRewardCenterDialog() {
   return null;
 }
 
-async function closeRewardCenterDialog(summaryToggleButton) {
+async function closeRewardCenterDialog() {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const dialog = findRewardCenterDialog();
     if (!dialog) {
       return true;
-    }
-
-    if (
-      summaryToggleButton instanceof HTMLButtonElement
-      && summaryToggleButton.isConnected
-      && !summaryToggleButton.disabled
-    ) {
-      summaryToggleButton.click();
-      await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
-      if (!findRewardCenterDialog()) {
-        return true;
-      }
     }
 
     const closeButton = findRewardCenterCloseButton(dialog);
@@ -1150,12 +1183,6 @@ async function closeRewardCenterDialog(summaryToggleButton) {
       if (!findRewardCenterDialog()) {
         return true;
       }
-    }
-
-    dispatchEscapeKey();
-    await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
-    if (!findRewardCenterDialog()) {
-      return true;
     }
   }
 
@@ -1226,6 +1253,204 @@ function findWatchStreakCard(dialog) {
   return null;
 }
 
+function extractWatchStreakValueFromDialog(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return {
+      value: null,
+      source: "none",
+      primaryValue: null,
+      fallbackValue: null,
+      hadPrimaryContainer: false,
+      hadLegacyCard: false
+    };
+  }
+
+  const primaryResult = tryPrimaryWatchStreakValue(dialog);
+  const fallbackResult = tryLegacyWatchStreakValue(dialog);
+
+  if (Number.isInteger(primaryResult.value) && primaryResult.value >= 0) {
+    return {
+      value: primaryResult.value,
+      source: "primary",
+      primaryValue: primaryResult.value,
+      fallbackValue: fallbackResult.value,
+      hadPrimaryContainer: primaryResult.hadContainer,
+      hadLegacyCard: fallbackResult.hadCard
+    };
+  }
+
+  if (Number.isInteger(fallbackResult.value) && fallbackResult.value >= 0) {
+    return {
+      value: fallbackResult.value,
+      source: "fallback",
+      primaryValue: primaryResult.value,
+      fallbackValue: fallbackResult.value,
+      hadPrimaryContainer: primaryResult.hadContainer,
+      hadLegacyCard: fallbackResult.hadCard
+    };
+  }
+
+  return {
+    value: null,
+    source: "none",
+    primaryValue: primaryResult.value,
+    fallbackValue: fallbackResult.value,
+    hadPrimaryContainer: primaryResult.hadContainer,
+    hadLegacyCard: fallbackResult.hadCard
+  };
+}
+
+function tryPrimaryWatchStreakValue(dialog) {
+  const badgeResult = extractWatchStreakValueFromFooterBadge(dialog);
+  if (badgeResult.hadContainer && badgeResult.value !== null) {
+    return badgeResult;
+  }
+
+  const container = findPrimaryWatchStreakContainer(dialog);
+  if (!(container instanceof HTMLElement)) {
+    return {
+      value: null,
+      hadContainer: badgeResult.hadContainer
+    };
+  }
+
+  const iconAnchors = findWatchStreakIconAnchors(container)
+    .filter((anchor) => !isInsideExcludedStreakArea(anchor));
+  for (const iconAnchor of iconAnchors) {
+    const strongNodes = findPreferredStreakNodesNearIcon(iconAnchor, container, "strong");
+    const strongValue = extractIntegerFromPreferredNodes(strongNodes);
+    if (strongValue !== null) {
+      return { value: strongValue, hadContainer: true };
+    }
+  }
+
+  return { value: null, hadContainer: true };
+}
+
+function extractWatchStreakValueFromFooterBadge(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return { value: null, hadContainer: false };
+  }
+
+  const controlledInputs = dialog.querySelectorAll("input[aria-controls='watch-streak-footer']");
+  let hadContainer = false;
+
+  for (const input of controlledInputs) {
+    if (!(input instanceof HTMLInputElement) || !input.id) {
+      continue;
+    }
+
+    const label = dialog.querySelector(`label[for='${CSS.escape(input.id)}']`);
+    if (!(label instanceof HTMLElement)) {
+      continue;
+    }
+    hadContainer = true;
+
+    if (findWatchStreakIconAnchors(label).length === 0) {
+      continue;
+    }
+
+    const strongNodes = [...label.querySelectorAll("strong")]
+      .filter((node) => node instanceof HTMLElement)
+      .filter((node) => !isInsideExcludedStreakArea(node));
+    const value = extractIntegerFromPreferredNodes(strongNodes);
+    if (value !== null) {
+      return { value, hadContainer: true };
+    }
+  }
+
+  return { value: null, hadContainer };
+}
+
+function findPrimaryWatchStreakContainer(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return null;
+  }
+
+  const byId = dialog.querySelector("#watch-streak-footer");
+  if (byId instanceof HTMLElement) {
+    return byId;
+  }
+
+  const controller = dialog.querySelector("[aria-controls='watch-streak-footer']");
+  if (controller instanceof HTMLElement) {
+    const controlsId = controller.getAttribute("aria-controls");
+    if (controlsId) {
+      const target = dialog.querySelector(`#${CSS.escape(controlsId)}`);
+      if (target instanceof HTMLElement) {
+        return target;
+      }
+    }
+  }
+
+  const controlledInputs = dialog.querySelectorAll("input[aria-controls]");
+  for (const input of controlledInputs) {
+    if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+    if (!input.id) {
+      continue;
+    }
+    const label = dialog.querySelector(`label[for='${CSS.escape(input.id)}']`);
+    if (!(label instanceof HTMLElement)) {
+      continue;
+    }
+    if (findWatchStreakIconAnchors(label).length === 0) {
+      continue;
+    }
+    if (extractIntegerFromPreferredRegion(label) !== null) {
+      return label;
+    }
+  }
+
+  const labels = dialog.querySelectorAll("label");
+  for (const label of labels) {
+    if (!(label instanceof HTMLElement)) {
+      continue;
+    }
+    if (findWatchStreakIconAnchors(label).length === 0) {
+      continue;
+    }
+    if (extractIntegerFromPreferredRegion(label) !== null) {
+      return label;
+    }
+  }
+
+  const iconFallbackContainer = findPrimaryWatchStreakContainerByIcon(dialog);
+  if (iconFallbackContainer) {
+    return iconFallbackContainer;
+  }
+
+  return null;
+}
+
+function findPrimaryWatchStreakContainerByIcon(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return null;
+  }
+
+  const iconAnchors = findWatchStreakIconAnchors(dialog)
+    .filter((anchor) => !isInsideExcludedStreakArea(anchor));
+  for (const iconAnchor of iconAnchors) {
+    let cursor = iconAnchor.parentElement;
+    let depth = 0;
+
+    while (cursor && cursor !== dialog && depth < 6) {
+      if (
+        cursor instanceof HTMLElement
+        && !isInsideExcludedStreakArea(cursor)
+        && extractIntegerFromPreferredRegion(cursor) !== null
+      ) {
+        return cursor;
+      }
+      cursor = cursor.parentElement;
+      depth += 1;
+    }
+  }
+
+  return null;
+}
+
 function findWatchStreakIconAnchors(root) {
   const normalizedFragment = normalizePathData(WATCH_STREAK_ICON_PATH_FRAGMENT);
   const anchors = [];
@@ -1290,25 +1515,34 @@ function hasWatchStreakChevronButton(root) {
   return false;
 }
 
-function extractWatchStreakValueFromCard(card) {
+function tryLegacyWatchStreakValue(dialog) {
+  const card = findWatchStreakCard(dialog);
+  if (!(card instanceof HTMLElement)) {
+    return { value: null, hadCard: false };
+  }
+
+  return {
+    value: extractWatchStreakValueFromLegacyCard(card),
+    hadCard: true
+  };
+}
+
+function extractWatchStreakValueFromLegacyCard(card) {
   if (!(card instanceof HTMLElement)) {
     return null;
   }
 
-  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
-  const iconAnchors = findWatchStreakIconAnchors(card);
-  for (const iconAnchor of iconAnchors) {
-    const nearbyValue = extractWatchStreakValueNearIcon(iconAnchor, card);
-    if (nearbyValue !== null) {
-      return nearbyValue;
-    }
+  const directCardValue = extractIntegerFromPreferredRegion(card);
+  if (directCardValue !== null) {
+    return directCardValue;
   }
 
+  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
   const headerRegion = progressBar instanceof Element
     ? progressBar.closest("div")?.previousElementSibling
     : null;
   if (headerRegion instanceof HTMLElement) {
-    const headerValue = extractBestStreakInteger(headerRegion.textContent);
+    const headerValue = extractIntegerFromPreferredRegion(headerRegion);
     if (headerValue !== null) {
       return headerValue;
     }
@@ -1322,7 +1556,7 @@ function extractWatchStreakValueNearIcon(iconAnchor, card) {
   let depth = 0;
 
   while (cursor && cursor !== card && depth < 6) {
-    const candidateValue = extractBestStreakInteger(cursor.textContent);
+    const candidateValue = extractIntegerFromPreferredRegion(cursor);
     if (candidateValue !== null) {
       return candidateValue;
     }
@@ -1334,27 +1568,142 @@ function extractWatchStreakValueNearIcon(iconAnchor, card) {
   return null;
 }
 
-function extractBestStreakInteger(text) {
-  const source = String(text || "");
-  const matches = source.match(/\d{1,4}/g);
-  if (!matches) {
+function extractIntegerFromPreferredRegion(region) {
+  if (!(region instanceof HTMLElement) || isInsideExcludedStreakArea(region)) {
     return null;
   }
 
-  const values = matches
-    .map((token) => Number.parseInt(token, 10))
-    .filter((value) => Number.isInteger(value) && value >= 0 && value <= 366);
-  if (values.length === 0) {
-    return null;
+  const strongNodes = [...region.querySelectorAll("strong")]
+    .filter((node) => node instanceof HTMLElement)
+    .filter((node) => !isInsideExcludedStreakArea(node));
+  const strongValue = extractIntegerFromPreferredNodes(strongNodes);
+  if (strongValue !== null) {
+    return strongValue;
   }
 
-  for (const value of values) {
-    if (value > 0) {
+  const textNodes = [...region.querySelectorAll("p, span")]
+    .filter((node) => node instanceof HTMLElement)
+    .filter((node) => !isInsideExcludedStreakArea(node))
+    .filter((node) => !node.closest("em"));
+  return extractIntegerFromPreferredNodes(textNodes);
+}
+
+function findPreferredStreakNodesNearIcon(iconAnchor, boundary, type) {
+  const nodes = [];
+  let cursor = iconAnchor instanceof Element ? iconAnchor.parentElement : null;
+  let depth = 0;
+
+  while (cursor && cursor !== boundary.parentElement && depth < 8) {
+    if (cursor instanceof HTMLElement && !isInsideExcludedStreakArea(cursor)) {
+      if (type === "strong") {
+        const strongs = [...cursor.querySelectorAll("strong")]
+          .filter((node) => node instanceof HTMLElement)
+          .filter((node) => !isInsideExcludedStreakArea(node));
+        nodes.push(...strongs);
+      } else {
+        const textNodes = [...cursor.querySelectorAll("p, span")]
+          .filter((node) => node instanceof HTMLElement)
+          .filter((node) => !isInsideExcludedStreakArea(node))
+          .filter((node) => !node.closest("em"));
+        nodes.push(...textNodes);
+      }
+    }
+
+    if (cursor === boundary) {
+      break;
+    }
+
+    cursor = cursor.parentElement;
+    depth += 1;
+  }
+
+  return dedupeElementNodes(nodes);
+}
+
+function dedupeElementNodes(nodes) {
+  const unique = [];
+  const seen = new Set();
+  for (const node of nodes) {
+    if (!(node instanceof Element)) {
+      continue;
+    }
+    if (seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    unique.push(node);
+  }
+  return unique;
+}
+
+function extractIntegerFromPreferredNodes(nodes) {
+  for (const node of nodes) {
+    const value = extractIntegerFromPreferredNode(node);
+    if (value !== null) {
       return value;
     }
   }
+  return null;
+}
 
-  return 0;
+function extractIntegerFromPreferredNode(node) {
+  if (!(node instanceof Element) || isInsideExcludedStreakArea(node)) {
+    return null;
+  }
+
+  const text = String(node.textContent || "");
+  const tokens = text.match(/\d[\d.,\s\u00a0\u202f]*/g);
+  if (!tokens) {
+    return null;
+  }
+
+  for (const token of tokens) {
+    const parsed = parseStrictIntegerToken(token);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function parseStrictIntegerToken(token) {
+  const raw = String(token || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const normalizedSpaces = raw.replace(/[\u00a0\u202f]/g, " ").trim();
+  const strictGroupedInteger = /^\d{1,3}([., ]\d{3})*$/;
+  if (!strictGroupedInteger.test(normalizedSpaces) && !/^\d+$/.test(normalizedSpaces)) {
+    return null;
+  }
+
+  const digitsOnly = normalizedSpaces.replace(/[., ]/g, "");
+  if (!/^\d+$/.test(digitsOnly)) {
+    return null;
+  }
+
+  const value = Number.parseInt(digitsOnly, 10);
+  if (!Number.isInteger(value) || value < 0) {
+    return null;
+  }
+
+  return value;
+}
+
+function isInsideExcludedStreakArea(node) {
+  if (!(node instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(
+    node.closest(
+      "[data-test-selector='cost'], .reward-icon__cost,"
+      + " [data-test-selector='copo-balance-string'], [data-test-selector='bits-balance-string'],"
+      + " [data-test-selector='community-points-summary'], em"
+    )
+  );
 }
 
 function normalizePathData(pathData) {
