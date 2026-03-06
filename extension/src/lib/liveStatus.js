@@ -97,7 +97,7 @@ async function getChannelLiveStatus(channel) {
       return status;
     } catch (error) {
       console.warn(
-        "TW Watch Guard: live status unavailable.",
+        "Stream Guard: live status unavailable.",
         channel,
         error
       );

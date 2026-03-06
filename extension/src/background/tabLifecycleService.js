@@ -170,9 +170,18 @@ export function createTabLifecycleService({
         };
       }
       if (!nextClaimStatsByChannel[channel]) {
+        const retainedBroadcast = nextBroadcastSessionsByChannel[channel];
+        const retainedClaimCount = Math.max(
+          0,
+          Math.floor(Number(retainedBroadcast?.claimCount) || 0)
+        );
+        const retainedLastClaimAt = Math.max(
+          0,
+          Math.round(Number(retainedBroadcast?.lastClaimAt) || 0)
+        );
         nextClaimStatsByChannel[channel] = {
-          count: 0,
-          lastClaimAt: Date.now()
+          count: retainedClaimCount,
+          lastClaimAt: retainedLastClaimAt > 0 ? retainedLastClaimAt : Date.now()
         };
       }
 
@@ -213,9 +222,18 @@ export function createTabLifecycleService({
           delete nextBroadcastSessionsByChannel[channel];
           delete nextWatchStreakByChannel[channel];
         }
+        const retainedBroadcast = nextBroadcastSessionsByChannel[channel];
+        const retainedClaimCount = Math.max(
+          0,
+          Math.floor(Number(retainedBroadcast?.claimCount) || 0)
+        );
+        const retainedLastClaimAt = Math.max(
+          0,
+          Math.round(Number(retainedBroadcast?.lastClaimAt) || 0)
+        );
         nextClaimStatsByChannel[channel] = {
-          count: 0,
-          lastClaimAt: Date.now()
+          count: retainedClaimCount,
+          lastClaimAt: retainedLastClaimAt > 0 ? retainedLastClaimAt : Date.now()
         };
         nextClaimAvailabilityByChannel[channel] = {
           available: false,

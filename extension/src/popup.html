@@ -3,13 +3,21 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Twitch Watch Guard</title>
+    <title>Stream Guard</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body class="popup-body">
     <main class="popup">
       <header class="popup-header">
-        <h1>Twitch Watch Guard</h1>
+        <h1 class="popup-title">
+          Stream Guar<button
+            id="diagnostics-toggle"
+            type="button"
+            class="title-debug-toggle"
+            aria-label="Diagnose anzeigen oder ausblenden"
+            title="Diagnose anzeigen oder ausblenden"
+          >d</button>
+        </h1>
         <label class="watch-toggle" aria-label="Watch Group aktivieren">
           <input id="watch-toggle" type="checkbox">
           <span class="watch-toggle-slider" aria-hidden="true"></span>
@@ -22,7 +30,7 @@
         <p id="empty-state" class="empty-state">Noch keine Channels markiert.</p>
       </section>
 
-      <section class="panel panel-debug">
+      <section id="diagnostics-panel" class="panel panel-debug" hidden>
         <div class="section-title">Diagnose</div>
         <p id="telemetry-status" class="telemetry-status">Logs werden geladen...</p>
         <div class="telemetry-actions">

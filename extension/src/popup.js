@@ -3,6 +3,8 @@ import { getChannelsLiveStatus } from "./lib/liveStatus.js";
 const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
+const diagnosticsPanel = document.getElementById("diagnostics-panel");
+const diagnosticsToggle = document.getElementById("diagnostics-toggle");
 const telemetryStatus = document.getElementById("telemetry-status");
 const telemetryExportButton = document.getElementById("telemetry-export");
 const telemetryClearButton = document.getElementById("telemetry-clear");
@@ -35,11 +37,13 @@ let settingsUpdateInFlight = false;
 let watchToggleUpdateInFlight = false;
 let telemetryExportInFlight = false;
 let telemetryClearInFlight = false;
+let diagnosticsVisible = false;
 
 void init();
 
 async function init() {
   bindEvents();
+  setDiagnosticsVisible(false);
   renderTelemetryStatus(null);
   window.setInterval(() => {
     renderCurrent();
@@ -72,6 +76,19 @@ function bindEvents() {
   telemetryClearButton?.addEventListener("click", () => {
     void clearTelemetry();
   });
+  diagnosticsToggle?.addEventListener("click", () => {
+    setDiagnosticsVisible(!diagnosticsVisible);
+  });
+}
+
+function setDiagnosticsVisible(visible) {
+  diagnosticsVisible = Boolean(visible);
+  if (diagnosticsPanel) {
+    diagnosticsPanel.hidden = !diagnosticsVisible;
+  }
+  if (diagnosticsToggle) {
+    diagnosticsToggle.setAttribute("aria-pressed", diagnosticsVisible ? "true" : "false");
+  }
 }
 
 async function refresh() {

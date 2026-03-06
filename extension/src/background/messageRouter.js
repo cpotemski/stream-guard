@@ -7,7 +7,6 @@ export function createMessageRouter({
   updateBadge,
   toggleImportantChannel,
   logWorkerEvent,
-  resetManagedWatchState,
   closeManagedWatchTabs,
   writeRuntimeState,
   handleWatchUptime,
@@ -52,7 +51,6 @@ export function createMessageRouter({
       }
       case "watch:start": {
         await logWorkerEvent("watch:start", {});
-        await resetManagedWatchState();
         const settings = await writeSettings({ autoManage: true });
         const managedTabsByChannel = await reconcileManagedTabs(settings);
         await syncAlarm(true);
@@ -69,12 +67,8 @@ export function createMessageRouter({
           managedTabsByChannel: {},
           detachedUntilByChannel: {},
           watchSessionsByChannel: {},
-          broadcastSessionsByChannel: {},
-          lastBroadcastStatsByChannel: {},
-          claimStatsByChannel: {},
           claimAvailabilityByChannel: {},
-          playbackStateByChannel: {},
-          watchStreakByChannel: {}
+          playbackStateByChannel: {}
         });
         const settings = await writeSettings({ autoManage: false });
         await syncAlarm(false);

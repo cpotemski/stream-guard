@@ -14,18 +14,17 @@ import { createOrchestratorService } from "./background/orchestratorService.js";
 import { createRuntimeStore } from "./background/runtimeStore.js";
 import { getExistingTab, getChannelFromTab } from "./background/tabUtils.js";
 import { createWorkerLogger } from "./background/workerLogger.js";
-import { createWatchStateService } from "./background/watchStateService.js";
 import { createTelemetryStore } from "./background/telemetryStore.js";
 
 const ORCHESTRATOR_ALARM = "orchestrator-tick";
 const ORCHESTRATOR_LAST_TICK_AT_KEY = "orchestratorLastTickAt";
-const WATCH_GROUP_TITLE = "TW Watch";
+const WATCH_GROUP_TITLE = "Stream Guard";
 const STATE_CACHE_TTL_MS = 1500;
 const AUTH_CACHE_TTL_MS = 3000;
 const WAKE_GAP_THRESHOLD_MS = 180000;
 const BROADCAST_SESSION_RETENTION_MS = 900000;
 const DETACHED_REOPEN_COOLDOWN_MS = 300000;
-const WORKER_LOG_PREFIX = "[TW Watch Guard]";
+const WORKER_LOG_PREFIX = "[Stream Guard]";
 const TELEMETRY_MAX_EVENTS = 5000;
 
 const telemetryStore = createTelemetryStore({
@@ -64,13 +63,6 @@ runtimeStore.setOnStateMutated(() => {
   authorizationService.clearAuthorizationCache();
 });
 
-const watchStateService = createWatchStateService({
-  readRuntimeStateCached: runtimeStore.readRuntimeStateCached,
-  writeRuntimeState: runtimeStore.writeRuntimeState,
-  closeManagedWatchTabs,
-  logWorkerEvent: workerLogger.logWorkerEvent
-});
-
 const streamSessionService = createStreamSessionService({
   readRuntimeStateCached: runtimeStore.readRuntimeStateCached,
   writeRuntimeState: runtimeStore.writeRuntimeState,
@@ -103,7 +95,6 @@ const handleMessage = createMessageRouter({
   updateBadge: orchestratorService.updateBadge,
   toggleImportantChannel,
   logWorkerEvent: workerLogger.logWorkerEvent,
-  resetManagedWatchState: watchStateService.resetManagedWatchState,
   closeManagedWatchTabs,
   writeRuntimeState: runtimeStore.writeRuntimeState,
   handleWatchUptime: streamSessionService.handleWatchUptime,

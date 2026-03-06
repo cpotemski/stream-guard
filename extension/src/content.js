@@ -33,7 +33,7 @@ const PLAYBACK_STATE_EVENTS = [
   "playing",
   "waiting"
 ];
-const TAB_LOG_PREFIX = "[TW Watch Guard]";
+const TAB_LOG_PREFIX = "[Stream Guard]";
 
 let lastChannel = null;
 let lastReportedUptimeKey = null;

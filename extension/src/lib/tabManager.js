@@ -1,4 +1,4 @@
-const WATCH_GROUP_TITLE = "TW Watch";
+const WATCH_GROUP_TITLE = "Stream Guard";
 const WATCH_GROUP_COLOR = "purple";
 const TAB_PRIME_DURATION_MS = 20000;
 let tabPrimeInFlight = null;

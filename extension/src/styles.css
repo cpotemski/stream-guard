@@ -69,6 +69,27 @@
   font-size: 16px;
 }
 
+.popup-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+.title-debug-toggle {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.title-debug-toggle:hover {
+  color: #93c5fd;
+}
+
 .watch-toggle {
   position: relative;
   display: inline-flex;
