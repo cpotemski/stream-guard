@@ -14,14 +14,15 @@ Diese Datei definiert verbindliche Arbeitsregeln fuer dieses Repository.
 - Priorisiert werden Robustheit (24/7), einfache Nutzbarkeit, minimale Nutzerinteraktion und klare Betriebsuebersicht.
 - Themen ausserhalb dieser v1-Ziele werden nicht vorgezogen und hoechstens als spaeterer Kandidat notiert.
 
-## Memory-Nutzung
-- Fuer dieses Projekt ist das dedizierte Memory-Projekt `twitch-watcher` zu verwenden.
-- Wichtige Entscheidungen muessen in diesem Memory-Projekt dokumentiert werden.
-- Reale Fortschritte muessen in diesem Memory-Projekt dokumentiert werden.
-- Vor groesseren Richtungsentscheidungen ist der relevante Memory-Kontext zu pruefen.
-- Memory-Hygiene erfolgt manuell anhand klarer Lifecycle-Regeln (`active|historical|obsolete`).
-- Lifecycle-Regeln fuer `active|historical|obsolete` sind in `.memory/README.md` definiert und verbindlich.
-- Historische oder obsolete Eintraege werden nicht im aktiven Memory-Baum belassen.
+## Engram workflow
+- Use Engram via MCP for persistent project memory in this repository.
+- For this repository, use the Engram project stream-guard.
+- At session start, check the existing memories for project context.
+- Before making assumptions, search Engram within the stream-guard project when possible.
+- Store important decisions, debugging findings, setup details, constraints, and follow-up tasks.
+- Link important new memories to the stream-guard project.
+- At the end of substantial work, store a short project-relevant summary.
+- Never store secrets or credentials in Engram.
 
 ## Dokumentationsstandard
 - Dokumentiert werden nur Dinge mit echtem Projektwert:
@@ -30,7 +31,6 @@ Diese Datei definiert verbindliche Arbeitsregeln fuer dieses Repository.
   - umgesetzte Meilensteine
   - bekannte offene Risiken fuer die v1
 - Keine aufgeblaehte Protokollierung von irrelevanten Zwischenschritten.
-- Neue Notes sollen ein `status`-Feld im Frontmatter nutzen (`active|historical|obsolete`).
 
 ## Versionierung
 - Bei jeder inhaltlichen Aenderung an der Extension ist die Versionsnummer zu erhoehen.
