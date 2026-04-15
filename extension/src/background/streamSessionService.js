@@ -269,6 +269,16 @@ export function createStreamSessionService({
       return;
     }
 
+    const highestKnownPositiveStreak = getHighestKnownPositiveStreak(runtimeState, channel);
+    if (value < 1 && highestKnownPositiveStreak > 0) {
+      await logWorkerEvent("streak:ignored-non-positive-after-positive", {
+        channel,
+        value,
+        highestKnownPositiveStreak
+      });
+      return;
+    }
+
     const currentBroadcastStartedAt = Math.round(Number(currentBroadcast?.estimatedStartedAt));
     const normalizedStartedAt = (
       Number.isFinite(currentBroadcastStartedAt) && currentBroadcastStartedAt > 0
@@ -416,6 +426,30 @@ function normalizeStreakValue(value) {
   }
 
   return normalized;
+}
+
+function getHighestKnownPositiveStreak(runtimeState, channel) {
+  if (!channel || !runtimeState || typeof runtimeState !== "object") {
+    return 0;
+  }
+
+  const candidates = [
+    runtimeState.watchStreakByChannel?.[channel]?.value,
+    runtimeState.broadcastSessionsByChannel?.[channel]?.streakValue,
+    runtimeState.broadcastSessionsByChannel?.[channel]?.baselineStreakValue,
+    runtimeState.lastBroadcastStatsByChannel?.[channel]?.streakValue,
+    runtimeState.lastBroadcastStatsByChannel?.[channel]?.baselineStreakValue
+  ];
+
+  let highest = 0;
+  for (const candidate of candidates) {
+    const normalized = normalizeStreakValue(candidate);
+    if (normalized !== null && normalized > highest) {
+      highest = normalized;
+    }
+  }
+
+  return highest;
 }
 
 function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUptimeSeconds) {

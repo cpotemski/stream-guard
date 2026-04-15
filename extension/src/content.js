@@ -730,7 +730,6 @@ async function reportWatchStreak() {
   }
 
   if (!authorization?.ok || !authorization.authorized) {
-    await sendStreakProbeLog(channel, "unauthorized");
     return;
   }
 

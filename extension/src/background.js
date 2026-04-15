@@ -25,10 +25,13 @@ const WAKE_GAP_THRESHOLD_MS = 180000;
 const BROADCAST_SESSION_RETENTION_MS = 900000;
 const DETACHED_REOPEN_COOLDOWN_MS = 300000;
 const WORKER_LOG_PREFIX = "[Stream Guard]";
-const TELEMETRY_MAX_EVENTS = 5000;
+const TELEMETRY_MAX_EVENTS = 1000;
 
 const telemetryStore = createTelemetryStore({
   maxEvents: TELEMETRY_MAX_EVENTS
+});
+void telemetryStore.compact().catch(() => {
+  // Keep startup resilient if persisted telemetry cannot be compacted immediately.
 });
 const workerLogger = createWorkerLogger(WORKER_LOG_PREFIX, telemetryStore.append);
 const runtimeStore = createRuntimeStore({

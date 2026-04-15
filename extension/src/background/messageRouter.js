@@ -176,11 +176,6 @@ export function createMessageRouter({
 
         const authorized = await canManageChannelForTab(channel, senderTabId);
         if (!authorized) {
-          await logWorkerEvent("streak:probe-log:ignored", {
-            channel,
-            reason,
-            senderTabId
-          });
           return {};
         }
 

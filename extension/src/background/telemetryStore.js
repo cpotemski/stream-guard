@@ -1,6 +1,7 @@
 const TELEMETRY_SCHEMA_VERSION = 1;
 const DEFAULT_STORAGE_KEY = "twWatchGuardTelemetry";
-const DEFAULT_MAX_EVENTS = 5000;
+const DEFAULT_MAX_EVENTS = 1000;
+const QUOTA_EXCEEDED_FRAGMENT = "quota";
 
 export function createTelemetryStore({
   storageKey = DEFAULT_STORAGE_KEY,
@@ -14,9 +15,27 @@ export function createTelemetryStore({
   }
 
   async function writeState(state) {
+    let nextState = normalizeState(state, maxEvents);
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        await chrome.storage.local.set({
+          [storageKey]: nextState
+        });
+        return nextState;
+      } catch (error) {
+        if (!isQuotaExceededError(error) || nextState.events.length <= 1) {
+          throw error;
+        }
+
+        nextState = dropOldestHalf(nextState);
+      }
+    }
+
     await chrome.storage.local.set({
-      [storageKey]: state
+      [storageKey]: nextState
     });
+    return nextState;
   }
 
   function withWriteLock(task) {
@@ -46,8 +65,7 @@ export function createTelemetryStore({
         events: trimmedEvents
       };
 
-      await writeState(nextState);
-      return nextState;
+      return writeState(nextState);
     });
   }
 
@@ -75,9 +93,10 @@ export function createTelemetryStore({
         events: []
       };
 
-      await writeState(nextState);
+      const persistedState = await writeState(nextState);
       return {
-        clearedEvents: state.events.length
+        clearedEvents: state.events.length,
+        droppedCount: persistedState.droppedCount
       };
     });
   }
@@ -91,11 +110,19 @@ export function createTelemetryStore({
     };
   }
 
+  async function compact() {
+    return withWriteLock(async () => {
+      const state = await readState();
+      return writeState(state);
+    });
+  }
+
   return {
     append,
     exportSnapshot,
     clear,
-    getStats
+    getStats,
+    compact
   };
 }
 
@@ -143,6 +170,25 @@ function normalizeEntry(entry) {
   }
 
   return normalized;
+}
+
+function isQuotaExceededError(error) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return message.toLowerCase().includes(QUOTA_EXCEEDED_FRAGMENT);
+}
+
+function dropOldestHalf(state) {
+  const dropCount = Math.max(1, Math.ceil(state.events.length / 2));
+  const trimmedEvents = state.events.slice(dropCount);
+  const latestEvent = trimmedEvents[trimmedEvents.length - 1] || null;
+  const updatedAt = latestEvent?.timestamp || new Date().toISOString();
+
+  return {
+    ...state,
+    updatedAt,
+    droppedCount: state.droppedCount + dropCount,
+    events: trimmedEvents
+  };
 }
 
 function normalizeSource(source) {
