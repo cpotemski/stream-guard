@@ -252,7 +252,12 @@ function render(settings, runtimeState) {
         if (isLive) {
           const claimMinutesLabel = document.createElement("span");
           claimMinutesLabel.className = "channel-claim-minutes";
-          claimMinutesLabel.textContent = `(${formatLastClaimDuration(claimStats)})`;
+          claimMinutesLabel.textContent = `(${formatLastClaimDuration(
+            claimStats,
+            runtimeState,
+            channelBroadcastStats,
+            entry.name
+          )})`;
           stats.appendChild(claimMinutesLabel);
         }
       }
@@ -628,15 +633,41 @@ function normalizeChannels(channels) {
     }));
 }
 
-function formatLastClaimDuration(claimStats) {
-  const lastClaimAt = Number(claimStats?.lastClaimAt);
-  if (!Number.isFinite(lastClaimAt) || lastClaimAt <= 0) {
+function formatLastClaimDuration(claimStats, runtimeState, broadcastStats, channel) {
+  const referenceAt = getClaimReferenceTimestamp(claimStats, runtimeState, broadcastStats, channel);
+  if (!Number.isFinite(referenceAt) || referenceAt <= 0) {
     return "0min";
   }
 
-  const elapsedMs = Math.max(0, Date.now() - lastClaimAt);
+  const elapsedMs = Math.max(0, Date.now() - referenceAt);
   const elapsedMinutes = Math.floor(elapsedMs / 60000);
   return `${elapsedMinutes}min`;
+}
+
+function getClaimReferenceTimestamp(claimStats, runtimeState, broadcastStats, channel) {
+  const lastClaimAt = Math.round(Number(claimStats?.lastClaimAt) || 0);
+  if (lastClaimAt > 0) {
+    return lastClaimAt;
+  }
+
+  const broadcastLastClaimAt = Math.round(Number(broadcastStats?.lastClaimAt) || 0);
+  if (broadcastLastClaimAt > 0) {
+    return broadcastLastClaimAt;
+  }
+
+  const watchSessionStartedAt = Math.round(
+    Number(runtimeState?.watchSessionsByChannel?.[channel]?.startedAt) || 0
+  );
+  if (watchSessionStartedAt > 0) {
+    return watchSessionStartedAt;
+  }
+
+  const broadcastStartedAt = Math.round(Number(broadcastStats?.estimatedStartedAt) || 0);
+  if (broadcastStartedAt > 0) {
+    return broadcastStartedAt;
+  }
+
+  return 0;
 }
 
 function hasDisplayableWatchStreak(streak) {
