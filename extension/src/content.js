@@ -919,36 +919,7 @@ async function ensureManagedPlaybackState() {
     return;
   }
 
-  if (!needsPlaybackResume(video)) {
-    playResumeAttemptedForCurrentPause = false;
-    playResumeBlockedByPolicy = false;
-  }
-
-  if (shouldAttemptPlaybackResume(video)) {
-    try {
-      playResumeAttemptedForCurrentPause = true;
-      await video.play();
-      playResumeAttemptedForCurrentPause = false;
-      playResumeBlockedByPolicy = false;
-      await chrome.runtime.sendMessage({
-        type: "watch:playback-resumed",
-        channel
-      });
-      sendTabTelemetry("playback:resumed", {
-        channel
-      });
-    } catch (error) {
-      if (isAutoplayInteractionError(error)) {
-        playResumeBlockedByPolicy = true;
-        sendTabTelemetry("playback:resume-blocked-policy", {
-          channel
-        });
-      } else {
-        logTabError("video.play() failed while resuming playback", error);
-      }
-      // Playback resume can still be blocked by browser policy or page/player state.
-    }
-  }
+  await recoverManagedPlayback(channel, video);
 
   if (video.muted) {
     const unmutedAfterResume = await ensureVideoUnmutedWithShortcut(video);
@@ -1008,7 +979,7 @@ async function runPlaybackStatePollTick() {
 }
 
 async function reportManagedPlaybackStateForVideo(channel, video) {
-  const playbackState = getPlaybackState(video);
+  const playbackState = getManagedPlaybackState(video);
 
   const dedupeKey = `${channel}:${playbackState}`;
   if (dedupeKey === lastPlaybackStateKey) {
@@ -1034,6 +1005,48 @@ async function reportManagedPlaybackStateForVideo(channel, video) {
   } catch (_error) {
     // Ignore transient extension reload gaps.
   }
+}
+
+async function recoverManagedPlayback(channel, video) {
+  if (!needsPlaybackResume(video)) {
+    resetPlaybackRecoveryState();
+    return;
+  }
+
+  if (!shouldAttemptPlaybackResume(video)) {
+    return;
+  }
+
+  try {
+    playResumeAttemptedForCurrentPause = true;
+    await video.play();
+    resetPlaybackRecoveryState();
+    await chrome.runtime.sendMessage({
+      type: "watch:playback-resumed",
+      channel
+    });
+    sendTabTelemetry("playback:resumed", {
+      channel,
+      hidden: document.hidden
+    });
+  } catch (error) {
+    playResumeAttemptedForCurrentPause = false;
+    if (isAutoplayInteractionError(error)) {
+      playResumeBlockedByPolicy = true;
+      sendTabTelemetry("playback:resume-blocked-policy", {
+        channel,
+        hidden: document.hidden
+      });
+      return;
+    }
+
+    logTabError("video.play() failed while resuming playback", error);
+  }
+}
+
+function resetPlaybackRecoveryState() {
+  playResumeAttemptedForCurrentPause = false;
+  playResumeBlockedByPolicy = false;
 }
 
 function getChannelFromLocation(pathname) {
@@ -1732,10 +1745,6 @@ function shouldAttemptPlaybackResume(video) {
     return false;
   }
 
-  if (document.hidden || document.visibilityState !== "visible") {
-    return false;
-  }
-
   if (playResumeAttemptedForCurrentPause) {
     return false;
   }
@@ -1747,15 +1756,12 @@ function shouldAttemptPlaybackResume(video) {
   return true;
 }
 
-function getPlaybackState(video) {
+function getManagedPlaybackState(video) {
   if (!(video instanceof HTMLVideoElement)) {
     return "ok";
   }
 
   if (needsPlaybackResume(video)) {
-    if (document.hidden || document.visibilityState !== "visible") {
-      return "ok";
-    }
     return "paused";
   }
 

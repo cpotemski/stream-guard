@@ -106,7 +106,7 @@ export function createStreamSessionService({
       };
       nextClaimStatsByChannel[channel] = {
         count: 0,
-        lastClaimAt: Date.now()
+        lastClaimAt: 0
       };
       nextClaimAvailabilityByChannel[channel] = {
         available: false,
