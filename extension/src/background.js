@@ -5,7 +5,7 @@ import {
   setSettings,
   toggleImportantChannel
 } from "./lib/storage.js";
-import { closeManagedWatchTabs } from "./lib/tabManager.js";
+import { closeManagedWatchTabs, markTabContentReady } from "./lib/tabManager.js";
 import { createTabLifecycleService } from "./background/tabLifecycleService.js";
 import { createMessageRouter } from "./background/messageRouter.js";
 import { createAuthorizationService } from "./background/authorizationService.js";
@@ -108,6 +108,7 @@ const handleMessage = createMessageRouter({
   recordClaim: streamSessionService.recordClaim,
   updateClaimAvailability: streamSessionService.updateClaimAvailability,
   updateWatchStreak: streamSessionService.updateWatchStreak,
+  markTabContentReady,
   logTabTelemetryEvent: async ({ event, details, sender }) => {
     await telemetryStore.append({
       source: "tab",

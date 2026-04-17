@@ -43,8 +43,7 @@ async function reportWatchStreak() {
       summaryExists: diagnostics.summaryCount > 0,
       summaryCount: diagnostics.summaryCount,
       copoCount: diagnostics.copoCount,
-      bitsCount: diagnostics.bitsCount,
-      pointsButtonsCount: diagnostics.pointsButtonsCount
+      bitsCount: diagnostics.bitsCount
     });
     return;
   }
@@ -55,11 +54,9 @@ async function reportWatchStreak() {
   let streakValue = null;
   const wasOpenBefore = Boolean(findRewardCenterDialog());
   let hadDialog = false;
-  let hadLegacyCard = false;
   let hadPrimaryContainer = false;
   let parserSource = "none";
   let primaryValue = null;
-  let fallbackValue = null;
 
   try {
     if (!wasOpenBefore) {
@@ -87,7 +84,7 @@ async function reportWatchStreak() {
       ? await waitForResult(
         () => {
           const result = extractWatchStreakValueFromDialog(dialog);
-          if (result.hadPrimaryContainer || result.hadLegacyCard) {
+          if (result.hadPrimaryContainer) {
             return result;
           }
           return null;
@@ -96,11 +93,9 @@ async function reportWatchStreak() {
       )
       : null;
     streakValue = parserResult?.value ?? null;
-    hadLegacyCard = Boolean(parserResult?.hadLegacyCard);
     hadPrimaryContainer = Boolean(parserResult?.hadPrimaryContainer);
     parserSource = parserResult?.source || "none";
     primaryValue = parserResult?.primaryValue ?? null;
-    fallbackValue = parserResult?.fallbackValue ?? null;
   } finally {
     const closed = await closeRewardCenterDialog();
     if (!closed) {
@@ -109,35 +104,19 @@ async function reportWatchStreak() {
     streakProbeInFlight = false;
   }
 
-  if (
-    Number.isInteger(primaryValue)
-    && primaryValue >= 0
-    && Number.isInteger(fallbackValue)
-    && fallbackValue >= 0
-    && primaryValue !== fallbackValue
-  ) {
-    await sendStreakProbeLog(channel, "streak-parser-conflict", {
-      primaryValue,
-      fallbackValue
-    });
-  }
-
   if (!Number.isInteger(streakValue) || streakValue < 0) {
     console.warn(
       TAB_LOG_PREFIX,
       "streak could not be found",
-      { channel, wasOpenBefore, hadDialog, hadLegacyCard, hadPrimaryContainer }
+      { channel, wasOpenBefore, hadDialog, hadPrimaryContainer }
     );
     await sendStreakProbeLog(channel, "streak-no-valid-candidate", {
       hadPrimaryContainer,
-      hadLegacyCard,
-      primaryValue,
-      fallbackValue
+      primaryValue
     });
     await sendStreakProbeLog(channel, "streak-could-not-be-found", {
       wasOpenBefore,
       hadDialog,
-      hadLegacyCard,
       hadPrimaryContainer
     });
     return;
@@ -145,11 +124,6 @@ async function reportWatchStreak() {
 
   if (parserSource === "primary") {
     await sendStreakProbeLog(channel, "streak-primary-used", {
-      value: streakValue,
-      fallbackValue
-    });
-  } else if (parserSource === "fallback") {
-    await sendStreakProbeLog(channel, "streak-fallback-used", {
       value: streakValue
     });
   }
@@ -179,37 +153,20 @@ function findCommunityPointsSummaryRoot() {
 }
 
 function findCommunityPointsSummaryToggleButton(summary) {
-  const roots = [];
-  if (summary instanceof HTMLElement) {
-    roots.push(summary);
+  if (!(summary instanceof HTMLElement)) {
+    return null;
   }
-  roots.push(document);
 
-  for (const root of roots) {
-    const byCopoBalance = root.querySelector("[data-test-selector='copo-balance-string']");
-    const copoButton = byCopoBalance?.closest("button");
-    if (copoButton instanceof HTMLButtonElement) {
-      return copoButton;
-    }
+  const byCopoBalance = summary.querySelector("[data-test-selector='copo-balance-string']");
+  const copoButton = byCopoBalance?.closest("button");
+  if (copoButton instanceof HTMLButtonElement) {
+    return copoButton;
+  }
 
-    const byBitsBalance = root.querySelector("[data-test-selector='bits-balance-string']");
-    const bitsButton = byBitsBalance?.closest("button");
-    if (bitsButton instanceof HTMLButtonElement) {
-      return bitsButton;
-    }
-
-    const pointsAriaButtons = [...root.querySelectorAll("button")]
-      .filter((button) => button instanceof HTMLButtonElement)
-      .filter((button) => /points/i.test(String(button.getAttribute("aria-label") || "")));
-
-    const enabledPointsButton = pointsAriaButtons.find((button) => !button.disabled);
-    if (enabledPointsButton) {
-      return enabledPointsButton;
-    }
-
-    if (pointsAriaButtons.length > 0) {
-      return pointsAriaButtons[0];
-    }
+  const byBitsBalance = summary.querySelector("[data-test-selector='bits-balance-string']");
+  const bitsButton = byBitsBalance?.closest("button");
+  if (bitsButton instanceof HTMLButtonElement) {
+    return bitsButton;
   }
 
   return null;
@@ -219,15 +176,11 @@ function getSummaryToggleDiagnostics() {
   const summaries = document.querySelectorAll("[data-test-selector='community-points-summary']");
   const copo = document.querySelectorAll("[data-test-selector='copo-balance-string']");
   const bits = document.querySelectorAll("[data-test-selector='bits-balance-string']");
-  const pointsButtons = [...document.querySelectorAll("button")]
-    .filter((button) => button instanceof HTMLButtonElement)
-    .filter((button) => /points/i.test(String(button.getAttribute("aria-label") || "")));
 
   return {
     summaryCount: summaries.length,
     copoCount: copo.length,
-    bitsCount: bits.length,
-    pointsButtonsCount: pointsButtons.length
+    bitsCount: bits.length
   };
 }
 
@@ -294,64 +247,24 @@ function findRewardCenterCloseButton(dialog) {
   return null;
 }
 
-function findWatchStreakCard(dialog) {
-  if (!(dialog instanceof HTMLElement)) {
-    return null;
-  }
-
-  const iconAnchors = findWatchStreakIconAnchors(dialog);
-  for (const iconAnchor of iconAnchors) {
-    const card = findClosestWatchStreakCard(iconAnchor, true);
-    if (card) {
-      return card;
-    }
-  }
-
-  const progressBars = dialog.querySelectorAll("[role='progressbar'][aria-valuemin][aria-valuemax]");
-  for (const progressBar of progressBars) {
-    const card = findClosestWatchStreakCard(progressBar, false);
-    if (card) {
-      return card;
-    }
-  }
-
-  return null;
-}
-
 function extractWatchStreakValueFromDialog(dialog) {
   if (!(dialog instanceof HTMLElement)) {
     return {
       value: null,
       source: "none",
       primaryValue: null,
-      fallbackValue: null,
-      hadPrimaryContainer: false,
-      hadLegacyCard: false
+      hadPrimaryContainer: false
     };
   }
 
   const primaryResult = tryPrimaryWatchStreakValue(dialog);
-  const fallbackResult = tryLegacyWatchStreakValue(dialog);
 
   if (Number.isInteger(primaryResult.value) && primaryResult.value >= 0) {
     return {
       value: primaryResult.value,
       source: "primary",
       primaryValue: primaryResult.value,
-      fallbackValue: fallbackResult.value,
-      hadPrimaryContainer: primaryResult.hadContainer,
-      hadLegacyCard: fallbackResult.hadCard
-    };
-  }
-
-  if (Number.isInteger(fallbackResult.value) && fallbackResult.value >= 0) {
-    return {
-      value: fallbackResult.value,
-      source: "fallback",
-      primaryValue: primaryResult.value,
-      fallbackValue: fallbackResult.value,
-      hadPrimaryContainer: primaryResult.hadContainer,
-      hadLegacyCard: fallbackResult.hadCard
+      hadPrimaryContainer: primaryResult.hadContainer
     };
   }
 
@@ -359,9 +272,7 @@ function extractWatchStreakValueFromDialog(dialog) {
     value: null,
     source: "none",
     primaryValue: primaryResult.value,
-    fallbackValue: fallbackResult.value,
-    hadPrimaryContainer: primaryResult.hadContainer,
-    hadLegacyCard: fallbackResult.hadCard
+    hadPrimaryContainer: primaryResult.hadContainer
   };
 }
 
@@ -379,17 +290,14 @@ function tryPrimaryWatchStreakValue(dialog) {
     };
   }
 
-  const iconAnchors = findWatchStreakIconAnchors(container)
-    .filter((anchor) => !isInsideExcludedStreakArea(anchor));
-  for (const iconAnchor of iconAnchors) {
-    const strongNodes = findPreferredStreakNodesNearIcon(iconAnchor, container, "strong");
-    const strongValue = extractIntegerFromPreferredNodes(strongNodes);
-    if (strongValue !== null) {
-      return { value: strongValue, hadContainer: true };
-    }
-  }
-
-  return { value: null, hadContainer: true };
+  return {
+    value: extractIntegerFromPreferredNodes(
+      [...container.querySelectorAll("strong")]
+        .filter((node) => node instanceof HTMLElement)
+        .filter((node) => !isInsideExcludedStreakArea(node))
+    ),
+    hadContainer: true
+  };
 }
 
 function extractWatchStreakValueFromFooterBadge(dialog) {
@@ -448,240 +356,7 @@ function findPrimaryWatchStreakContainer(dialog) {
     }
   }
 
-  const controlledInputs = dialog.querySelectorAll("input[aria-controls]");
-  for (const input of controlledInputs) {
-    if (!(input instanceof HTMLInputElement)) {
-      continue;
-    }
-    if (!input.id) {
-      continue;
-    }
-    const label = dialog.querySelector(`label[for='${CSS.escape(input.id)}']`);
-    if (!(label instanceof HTMLElement)) {
-      continue;
-    }
-    if (findWatchStreakIconAnchors(label).length === 0) {
-      continue;
-    }
-    if (extractIntegerFromPreferredRegion(label) !== null) {
-      return label;
-    }
-  }
-
-  const labels = dialog.querySelectorAll("label");
-  for (const label of labels) {
-    if (!(label instanceof HTMLElement)) {
-      continue;
-    }
-    if (findWatchStreakIconAnchors(label).length === 0) {
-      continue;
-    }
-    if (extractIntegerFromPreferredRegion(label) !== null) {
-      return label;
-    }
-  }
-
-  const iconFallbackContainer = findPrimaryWatchStreakContainerByIcon(dialog);
-  if (iconFallbackContainer) {
-    return iconFallbackContainer;
-  }
-
   return null;
-}
-
-function findPrimaryWatchStreakContainerByIcon(dialog) {
-  if (!(dialog instanceof HTMLElement)) {
-    return null;
-  }
-
-  const iconAnchors = findWatchStreakIconAnchors(dialog)
-    .filter((anchor) => !isInsideExcludedStreakArea(anchor));
-  for (const iconAnchor of iconAnchors) {
-    let cursor = iconAnchor.parentElement;
-    let depth = 0;
-
-    while (cursor && cursor !== dialog && depth < 6) {
-      if (
-        cursor instanceof HTMLElement
-        && !isInsideExcludedStreakArea(cursor)
-        && extractIntegerFromPreferredRegion(cursor) !== null
-      ) {
-        return cursor;
-      }
-      cursor = cursor.parentElement;
-      depth += 1;
-    }
-  }
-
-  return null;
-}
-
-function findWatchStreakIconAnchors(root) {
-  const normalizedFragment = normalizePathData(WATCH_STREAK_ICON_PATH_FRAGMENT);
-  const anchors = [];
-  const paths = root.querySelectorAll("svg path[d]");
-
-  for (const path of paths) {
-    if (!(path instanceof SVGPathElement)) {
-      continue;
-    }
-
-    const pathData = normalizePathData(path.getAttribute("d"));
-    if (pathData && pathData.includes(normalizedFragment)) {
-      anchors.push(path);
-    }
-  }
-
-  return anchors;
-}
-
-function findClosestWatchStreakCard(anchor, requireIconAnchor) {
-  let current = anchor instanceof Element ? anchor.parentElement : null;
-
-  while (current && current !== document.body) {
-    const hasProgressBar = Boolean(
-      current.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]")
-    );
-    const hasChevronButton = hasWatchStreakChevronButton(current);
-    const hasIconAnchor = !requireIconAnchor || findWatchStreakIconAnchors(current).length > 0;
-
-    if (hasProgressBar && hasChevronButton && hasIconAnchor) {
-      return current;
-    }
-
-    current = current.parentElement;
-  }
-
-  return null;
-}
-
-function hasWatchStreakChevronButton(root) {
-  const normalizedFragment = normalizePathData(WATCH_STREAK_CHEVRON_PATH_FRAGMENT);
-  const buttons = root.querySelectorAll("button");
-
-  for (const button of buttons) {
-    if (!(button instanceof HTMLButtonElement)) {
-      continue;
-    }
-
-    const paths = button.querySelectorAll("svg path[d]");
-    for (const path of paths) {
-      if (!(path instanceof SVGPathElement)) {
-        continue;
-      }
-
-      const pathData = normalizePathData(path.getAttribute("d"));
-      if (pathData && pathData.includes(normalizedFragment)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-function tryLegacyWatchStreakValue(dialog) {
-  const card = findWatchStreakCard(dialog);
-  if (!(card instanceof HTMLElement)) {
-    return { value: null, hadCard: false };
-  }
-
-  return {
-    value: extractWatchStreakValueFromLegacyCard(card),
-    hadCard: true
-  };
-}
-
-function extractWatchStreakValueFromLegacyCard(card) {
-  if (!(card instanceof HTMLElement)) {
-    return null;
-  }
-
-  const directCardValue = extractIntegerFromPreferredRegion(card);
-  if (directCardValue !== null) {
-    return directCardValue;
-  }
-
-  const progressBar = card.querySelector("[role='progressbar'][aria-valuemin][aria-valuemax]");
-  const headerRegion = progressBar instanceof Element
-    ? progressBar.closest("div")?.previousElementSibling
-    : null;
-  if (headerRegion instanceof HTMLElement) {
-    const headerValue = extractIntegerFromPreferredRegion(headerRegion);
-    if (headerValue !== null) {
-      return headerValue;
-    }
-  }
-
-  return null;
-}
-
-function extractIntegerFromPreferredRegion(region) {
-  if (!(region instanceof HTMLElement) || isInsideExcludedStreakArea(region)) {
-    return null;
-  }
-
-  const strongNodes = [...region.querySelectorAll("strong")]
-    .filter((node) => node instanceof HTMLElement)
-    .filter((node) => !isInsideExcludedStreakArea(node));
-  const strongValue = extractIntegerFromPreferredNodes(strongNodes);
-  if (strongValue !== null) {
-    return strongValue;
-  }
-
-  const textNodes = [...region.querySelectorAll("p, span")]
-    .filter((node) => node instanceof HTMLElement)
-    .filter((node) => !isInsideExcludedStreakArea(node))
-    .filter((node) => !node.closest("em"));
-  return extractIntegerFromPreferredNodes(textNodes);
-}
-
-function findPreferredStreakNodesNearIcon(iconAnchor, boundary, type) {
-  const nodes = [];
-  let cursor = iconAnchor instanceof Element ? iconAnchor.parentElement : null;
-  let depth = 0;
-
-  while (cursor && cursor !== boundary.parentElement && depth < 8) {
-    if (cursor instanceof HTMLElement && !isInsideExcludedStreakArea(cursor)) {
-      if (type === "strong") {
-        const strongs = [...cursor.querySelectorAll("strong")]
-          .filter((node) => node instanceof HTMLElement)
-          .filter((node) => !isInsideExcludedStreakArea(node));
-        nodes.push(...strongs);
-      } else {
-        const textNodes = [...cursor.querySelectorAll("p, span")]
-          .filter((node) => node instanceof HTMLElement)
-          .filter((node) => !isInsideExcludedStreakArea(node))
-          .filter((node) => !node.closest("em"));
-        nodes.push(...textNodes);
-      }
-    }
-
-    if (cursor === boundary) {
-      break;
-    }
-
-    cursor = cursor.parentElement;
-    depth += 1;
-  }
-
-  return dedupeElementNodes(nodes);
-}
-
-function dedupeElementNodes(nodes) {
-  const unique = [];
-  const seen = new Set();
-  for (const node of nodes) {
-    if (!(node instanceof Element)) {
-      continue;
-    }
-    if (seen.has(node)) {
-      continue;
-    }
-    seen.add(node);
-    unique.push(node);
-  }
-  return unique;
 }
 
 function extractIntegerFromPreferredNodes(nodes) {
@@ -752,13 +427,6 @@ function isInsideExcludedStreakArea(node) {
       + " [data-test-selector='community-points-summary'], em"
     )
   );
-}
-
-function normalizePathData(pathData) {
-  return String(pathData || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
 }
 
 async function waitForResult(readValue, timeoutMs) {

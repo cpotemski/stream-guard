@@ -124,6 +124,10 @@ function findClaimButton() {
     return null;
   }
 
+  return findClaimButtonByBonusMarker(summary);
+}
+
+function findClaimButtonByBonusMarker(summary) {
   const buttons = summary.querySelectorAll("button");
 
   for (const button of buttons) {
@@ -131,7 +135,7 @@ function findClaimButton() {
       continue;
     }
 
-    if (button.querySelector("[class*='claimable-bonus']")) {
+    if (button.querySelector(".claimable-bonus__icon, [class*='claimable-bonus']")) {
       return button;
     }
   }

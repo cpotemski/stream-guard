@@ -48,4 +48,15 @@ async function init() {
     void refreshInlineStats();
   }, INLINE_STATS_REFRESH_INTERVAL_MS);
   startPlaybackStatePolling();
+  await reportContentReady();
+}
+
+async function reportContentReady() {
+  try {
+    await chrome.runtime.sendMessage({
+      type: "content:ready"
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
 }

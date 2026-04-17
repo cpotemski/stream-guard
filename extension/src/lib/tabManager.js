@@ -1,9 +1,11 @@
 const WATCH_GROUP_TITLE = "Stream Guard";
 const WATCH_GROUP_COLOR = "purple";
-const TAB_PRIME_DURATION_MS = 20000;
+const TAB_PRIME_READY_TIMEOUT_MS = 8000;
 let tabPrimeInFlight = null;
 const pendingPrimeTabIds = [];
 const pendingPrimeSet = new Set();
+const readyPrimedTabIds = new Set();
+const readyWaitersByTabId = new Map();
 
 export async function openWatchTab(channel) {
   const targetChannel = String(channel || "").toLowerCase();
@@ -65,10 +67,29 @@ export async function closeManagedWatchTabs(tabIds) {
   const removableIds = validTabIds.filter((tabId) => existingIds.has(tabId));
 
   if (removableIds.length > 0) {
+    for (const tabId of removableIds) {
+      clearPrimeReadyState(tabId);
+    }
     await chrome.tabs.remove(removableIds);
   }
 
   return removableIds.length;
+}
+
+export function markTabContentReady(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  readyPrimedTabIds.add(tabId);
+
+  const waiter = readyWaitersByTabId.get(tabId);
+  if (!waiter) {
+    return;
+  }
+
+  readyWaitersByTabId.delete(tabId);
+  waiter.resolve(true);
 }
 
 async function findWatchGroupId() {
@@ -113,11 +134,56 @@ async function primeTab(createdTabId) {
     return;
   }
 
-  await delay(TAB_PRIME_DURATION_MS);
+  await waitForTabContentReady(createdTabId);
 }
 
-function delay(durationMs) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, durationMs);
+function waitForTabContentReady(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return Promise.resolve(false);
+  }
+
+  if (readyPrimedTabIds.has(tabId)) {
+    return Promise.resolve(true);
+  }
+
+  const existingWaiter = readyWaitersByTabId.get(tabId);
+  if (existingWaiter) {
+    return existingWaiter.promise;
+  }
+
+  let resolvePromise = null;
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
   });
+
+  const timeoutId = setTimeout(() => {
+    readyWaitersByTabId.delete(tabId);
+    resolvePromise(false);
+  }, TAB_PRIME_READY_TIMEOUT_MS);
+
+  readyWaitersByTabId.set(tabId, {
+    promise,
+    resolve: (value) => {
+      clearTimeout(timeoutId);
+      resolvePromise(Boolean(value));
+    }
+  });
+
+  return promise;
+}
+
+function clearPrimeReadyState(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  readyPrimedTabIds.delete(tabId);
+
+  const waiter = readyWaitersByTabId.get(tabId);
+  if (!waiter) {
+    return;
+  }
+
+  readyWaitersByTabId.delete(tabId);
+  waiter.resolve(false);
 }

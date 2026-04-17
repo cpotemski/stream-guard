@@ -68,7 +68,9 @@ async function ensureManagedPlaybackState() {
     return;
   }
 
-  if (shouldReloadForNetworkError2000()) {
+  const playerContext = resolvePlaybackPlayerContext();
+
+  if (shouldReloadForNetworkError2000(playerContext)) {
     sendTabTelemetry("playback:reload-network-error-2000", {
       channel
     });
@@ -76,7 +78,7 @@ async function ensureManagedPlaybackState() {
     return;
   }
 
-  const video = findPlayerVideo();
+  const video = playerContext.video;
   if (!video) {
     return;
   }
@@ -106,7 +108,7 @@ async function reportManagedPlaybackState() {
     return;
   }
 
-  const video = findPlayerVideo();
+  const video = resolvePlaybackPlayerContext().video;
   if (!video) {
     return;
   }
@@ -212,8 +214,56 @@ function resetPlaybackRecoveryState() {
 }
 
 function findPlayerVideo() {
+  return resolvePlaybackPlayerContext().video;
+}
+
+function resolvePlaybackPlayerContext() {
+  const playerRoot = findPlaybackPlayerRoot();
+  const video = findPlaybackVideo(playerRoot);
+  const overlay = findPlaybackOverlay(playerRoot);
+  const alert = findPlaybackAlert(playerRoot);
+
+  return {
+    playerRoot,
+    video,
+    overlay,
+    alert
+  };
+}
+
+function findPlaybackPlayerRoot() {
+  const playerRoot = document.querySelector("[data-a-target='video-player']");
+  return playerRoot instanceof HTMLElement ? playerRoot : null;
+}
+
+function findPlaybackVideo(playerRoot) {
+  const scopedVideo = playerRoot?.querySelector("video");
+  if (scopedVideo instanceof HTMLVideoElement) {
+    return scopedVideo;
+  }
+
   const video = document.querySelector("video");
   return video instanceof HTMLVideoElement ? video : null;
+}
+
+function findPlaybackOverlay(playerRoot) {
+  const scopedOverlay = playerRoot?.querySelector("[data-a-target='player-overlay-click-handler']");
+  if (scopedOverlay instanceof HTMLElement) {
+    return scopedOverlay;
+  }
+
+  const overlay = document.querySelector("[data-a-target='player-overlay-click-handler']");
+  return overlay instanceof HTMLElement ? overlay : null;
+}
+
+function findPlaybackAlert(playerRoot) {
+  const scopedAlert = playerRoot?.querySelector("[role='alert']");
+  if (scopedAlert instanceof HTMLElement) {
+    return scopedAlert;
+  }
+
+  const alert = document.querySelector("[role='alert']");
+  return alert instanceof HTMLElement ? alert : null;
 }
 
 function needsPlaybackResume(video) {
@@ -256,8 +306,8 @@ function getManagedPlaybackState(video) {
   return "ok";
 }
 
-function attemptUnmuteWithShortcut() {
-  const target = findPlaybackShortcutTarget();
+function attemptUnmuteWithShortcut(video) {
+  const target = findPlaybackShortcutTarget(video);
   if (!target) {
     return false;
   }
@@ -294,7 +344,7 @@ async function ensureVideoUnmutedWithShortcut(video) {
     return true;
   }
 
-  const firstAttemptTriggered = attemptUnmuteWithShortcut();
+  const firstAttemptTriggered = attemptUnmuteWithShortcut(video);
   if (!firstAttemptTriggered) {
     return false;
   }
@@ -304,7 +354,7 @@ async function ensureVideoUnmutedWithShortcut(video) {
     return true;
   }
 
-  const secondAttemptTriggered = attemptUnmuteWithShortcut();
+  const secondAttemptTriggered = attemptUnmuteWithShortcut(video);
   if (!secondAttemptTriggered) {
     return false;
   }
@@ -313,16 +363,16 @@ async function ensureVideoUnmutedWithShortcut(video) {
   return !video.muted;
 }
 
-function findPlaybackShortcutTarget() {
+function findPlaybackShortcutTarget(video) {
+  const playerContext = resolvePlaybackPlayerContext();
   const candidates = [
-    document.querySelector("[data-a-target='player-overlay-click-handler']"),
-    document.querySelector("[data-a-target='video-player']"),
-    document.querySelector("main"),
-    document.body
+    playerContext.overlay,
+    playerContext.playerRoot,
+    video
   ];
 
   for (const candidate of candidates) {
-    if (candidate instanceof HTMLElement || candidate instanceof Document) {
+    if (candidate instanceof HTMLElement) {
       return candidate;
     }
   }
@@ -371,8 +421,8 @@ function onUserInteractionSignal() {
   void ensureManagedPlaybackState();
 }
 
-function shouldReloadForNetworkError2000() {
-  if (!hasPlayerNetworkError2000()) {
+function shouldReloadForNetworkError2000(playerContext = resolvePlaybackPlayerContext()) {
+  if (!hasPlayerNetworkError2000(playerContext)) {
     return false;
   }
 
@@ -386,26 +436,34 @@ function shouldReloadForNetworkError2000() {
   return true;
 }
 
-function hasPlayerNetworkError2000() {
+function hasPlayerNetworkError2000(playerContext = resolvePlaybackPlayerContext()) {
   const textCandidates = [
-    document.querySelector("[data-a-target='video-player']")?.textContent || "",
-    document.querySelector("[data-a-target='player-overlay-click-handler']")?.textContent || "",
-    document.querySelector("[role='alert']")?.textContent || "",
-    document.body?.innerText || ""
+    playerContext.playerRoot?.textContent || "",
+    playerContext.overlay?.textContent || "",
+    playerContext.alert?.textContent || ""
   ];
 
   for (const textValue of textCandidates) {
-    const text = String(textValue || "");
-    if (!text) {
-      continue;
-    }
-
-    if (/\(\s*[^\)]*#?\s*2000\s*\)/i.test(text) || /#\s*2000\b/i.test(text)) {
+    if (containsNetworkError2000(textValue)) {
       return true;
     }
   }
 
+  const bodyText = document.body?.innerText || "";
+  if (containsNetworkError2000(bodyText)) {
+    return true;
+  }
+
   return false;
+}
+
+function containsNetworkError2000(textValue) {
+  const text = String(textValue || "");
+  if (!text) {
+    return false;
+  }
+
+  return /\(\s*[^\)]*#?\s*2000\s*\)/i.test(text) || /#\s*2000\b/i.test(text);
 }
 
 function readLastNetworkErrorReloadAt() {

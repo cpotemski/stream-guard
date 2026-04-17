@@ -15,6 +15,7 @@ export function createMessageRouter({
   recordClaim,
   updateClaimAvailability,
   updateWatchStreak,
+  markTabContentReady,
   logTabTelemetryEvent,
   exportTelemetrySnapshot,
   clearTelemetry,
@@ -147,6 +148,10 @@ export function createMessageRouter({
             [channel]: state
           }
         });
+        return {};
+      }
+      case "content:ready": {
+        markTabContentReady(sender?.tab?.id);
         return {};
       }
       case "claim:authorize": {
