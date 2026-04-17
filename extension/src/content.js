@@ -378,7 +378,8 @@ async function readRuntimeStateSnapshot() {
       "lastBroadcastStatsByChannel",
       "claimStatsByChannel",
       "claimAvailabilityByChannel",
-      "watchStreakByChannel"
+      "watchStreakByChannel",
+      "lastKnownWatchStreakByChannel"
     ]);
     return stored && typeof stored === "object" ? stored : {};
   } catch (_error) {
@@ -451,7 +452,8 @@ function getInlineStatsRenderKey(channel, isImportant, runtimeState) {
   const claimStats = runtimeState?.claimStatsByChannel?.[channel];
   const broadcastStats = runtimeState?.broadcastSessionsByChannel?.[channel]
     || runtimeState?.lastBroadcastStatsByChannel?.[channel];
-  const streak = runtimeState?.watchStreakByChannel?.[channel];
+  const streak = runtimeState?.watchStreakByChannel?.[channel]
+    || runtimeState?.lastKnownWatchStreakByChannel?.[channel];
   const claimAvailability = runtimeState?.claimAvailabilityByChannel?.[channel];
 
   return JSON.stringify({
@@ -529,7 +531,7 @@ function getWatchStreakForDisplay(channel, runtimeState, broadcastStats) {
 
   const streakValue = Math.floor(Number(broadcastStats?.streakValue));
   if (!Number.isInteger(streakValue) || streakValue < 0) {
-    return runtimeStreak || null;
+    return runtimeStreak || runtimeState?.lastKnownWatchStreakByChannel?.[channel] || null;
   }
 
   return {

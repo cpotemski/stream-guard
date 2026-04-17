@@ -63,12 +63,21 @@ export function createMessageRouter({
         const closedTabs = await closeManagedWatchTabs(
           Object.values(runtimeState.managedTabsByChannel)
         );
+        const endedAt = Date.now();
         await writeRuntimeState({
+          broadcastSessionsByChannel: {},
+          lastBroadcastStatsByChannel: mergeEndedBroadcastStats(
+            runtimeState.lastBroadcastStatsByChannel,
+            runtimeState.broadcastSessionsByChannel,
+            endedAt
+          ),
           managedTabsByChannel: {},
           detachedUntilByChannel: {},
           watchSessionsByChannel: {},
+          claimStatsByChannel: {},
           claimAvailabilityByChannel: {},
-          playbackStateByChannel: {}
+          playbackStateByChannel: {},
+          watchStreakByChannel: {}
         });
         const settings = await writeSettings({ autoManage: false });
         await syncAlarm(false);
@@ -216,4 +225,57 @@ export function createMessageRouter({
         throw new Error("Unsupported message type.");
     }
   };
+}
+
+function mergeEndedBroadcastStats(currentLastBroadcastStatsByChannel, broadcastSessionsByChannel, endedAt) {
+  const nextLastBroadcastStatsByChannel = {
+    ...(currentLastBroadcastStatsByChannel && typeof currentLastBroadcastStatsByChannel === "object"
+      ? currentLastBroadcastStatsByChannel
+      : {})
+  };
+
+  for (const [channel, session] of Object.entries(broadcastSessionsByChannel || {})) {
+    const estimatedStartedAt = Math.round(Number(session?.estimatedStartedAt));
+    if (!channel || !Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
+      continue;
+    }
+
+    const existing = nextLastBroadcastStatsByChannel[channel];
+    nextLastBroadcastStatsByChannel[channel] = {
+      estimatedStartedAt,
+      lastSeenAt: Math.max(0, Math.round(Number(session?.lastSeenAt) || 0)),
+      lastUptimeSeconds: Math.max(0, Math.round(Number(session?.lastUptimeSeconds) || 0)),
+      endedAt: Math.max(0, Math.round(Number(endedAt) || 0)),
+      claimCount: Math.max(0, Math.floor(Number(session?.claimCount) || 0)),
+      lastClaimAt: Math.max(0, Math.round(Number(session?.lastClaimAt) || 0)),
+      streakValue: normalizeStreakValue(session?.streakValue),
+      streakSeenAt: Math.max(0, Math.round(Number(session?.streakSeenAt) || 0)),
+      baselineStreakValue: normalizeStreakValue(session?.baselineStreakValue),
+      baselineStreakSeenAt: Math.max(
+        0,
+        Math.round(Number(session?.baselineStreakSeenAt) || 0)
+      ),
+      streakIncreasedForStream: Boolean(
+        session?.streakIncreasedForStream || existing?.streakIncreasedForStream
+      ),
+      streakUnexpectedJumpForStream: Boolean(
+        session?.streakUnexpectedJumpForStream || existing?.streakUnexpectedJumpForStream
+      )
+    };
+  }
+
+  return nextLastBroadcastStatsByChannel;
+}
+
+function normalizeStreakValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const normalized = Math.floor(Number(value));
+  if (!Number.isInteger(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return normalized;
 }

@@ -2,16 +2,28 @@ const TELEMETRY_SCHEMA_VERSION = 1;
 const DEFAULT_STORAGE_KEY = "twWatchGuardTelemetry";
 const DEFAULT_MAX_EVENTS = 1000;
 const QUOTA_EXCEEDED_FRAGMENT = "quota";
+const DEFAULT_FLUSH_DELAY_MS = 5000;
+const DEFAULT_EAGER_FLUSH_EVENT_COUNT = 25;
 
 export function createTelemetryStore({
   storageKey = DEFAULT_STORAGE_KEY,
-  maxEvents = DEFAULT_MAX_EVENTS
+  maxEvents = DEFAULT_MAX_EVENTS,
+  flushDelayMs = DEFAULT_FLUSH_DELAY_MS,
+  eagerFlushEventCount = DEFAULT_EAGER_FLUSH_EVENT_COUNT
 } = {}) {
   let writeQueue = Promise.resolve();
+  let cachedState = null;
+  let flushTimeoutId = 0;
+  let pendingEventCount = 0;
 
   async function readState() {
+    if (cachedState) {
+      return cachedState;
+    }
+
     const stored = await chrome.storage.local.get(storageKey);
-    return normalizeState(stored?.[storageKey], maxEvents);
+    cachedState = normalizeState(stored?.[storageKey], maxEvents);
+    return cachedState;
   }
 
   async function writeState(state) {
@@ -22,6 +34,7 @@ export function createTelemetryStore({
         await chrome.storage.local.set({
           [storageKey]: nextState
         });
+        cachedState = nextState;
         return nextState;
       } catch (error) {
         if (!isQuotaExceededError(error) || nextState.events.length <= 1) {
@@ -35,6 +48,7 @@ export function createTelemetryStore({
     await chrome.storage.local.set({
       [storageKey]: nextState
     });
+    cachedState = nextState;
     return nextState;
   }
 
@@ -46,27 +60,65 @@ export function createTelemetryStore({
     return writeQueue;
   }
 
+  function clearScheduledFlush() {
+    if (!flushTimeoutId) {
+      return;
+    }
+
+    clearTimeout(flushTimeoutId);
+    flushTimeoutId = 0;
+  }
+
+  async function flushPendingState() {
+    clearScheduledFlush();
+
+    if (!cachedState || pendingEventCount === 0) {
+      return cachedState;
+    }
+
+    pendingEventCount = 0;
+    return withWriteLock(async () => writeState(cachedState));
+  }
+
+  function scheduleFlush() {
+    if (pendingEventCount >= eagerFlushEventCount) {
+      void flushPendingState();
+      return;
+    }
+
+    if (flushTimeoutId) {
+      return;
+    }
+
+    flushTimeoutId = setTimeout(() => {
+      void flushPendingState();
+    }, flushDelayMs);
+  }
+
   async function append(entry) {
-    return withWriteLock(async () => {
-      const state = await readState();
-      const nextEntry = normalizeEntry(entry);
-      const nextEvents = [...state.events, nextEntry];
-      const overflowCount = Math.max(0, nextEvents.length - maxEvents);
-      const trimmedEvents = overflowCount > 0
-        ? nextEvents.slice(nextEvents.length - maxEvents)
-        : nextEvents;
+    const state = await readState();
+    const nextEntry = normalizeEntry(entry);
+    if (!nextEntry) {
+      return state;
+    }
 
-      const nextState = {
-        schemaVersion: TELEMETRY_SCHEMA_VERSION,
-        maxEvents,
-        createdAt: state.createdAt || nextEntry.timestamp,
-        updatedAt: nextEntry.timestamp,
-        droppedCount: state.droppedCount + overflowCount,
-        events: trimmedEvents
-      };
+    const nextEvents = [...state.events, nextEntry];
+    const overflowCount = Math.max(0, nextEvents.length - maxEvents);
+    const trimmedEvents = overflowCount > 0
+      ? nextEvents.slice(nextEvents.length - maxEvents)
+      : nextEvents;
 
-      return writeState(nextState);
-    });
+    cachedState = {
+      schemaVersion: TELEMETRY_SCHEMA_VERSION,
+      maxEvents,
+      createdAt: state.createdAt || nextEntry.timestamp,
+      updatedAt: nextEntry.timestamp,
+      droppedCount: state.droppedCount + overflowCount,
+      events: trimmedEvents
+    };
+    pendingEventCount += 1;
+    scheduleFlush();
+    return cachedState;
   }
 
   async function exportSnapshot() {
@@ -82,6 +134,8 @@ export function createTelemetryStore({
 
   async function clear() {
     return withWriteLock(async () => {
+      clearScheduledFlush();
+      pendingEventCount = 0;
       const state = await readState();
       const nowIso = new Date().toISOString();
       const nextState = {
@@ -112,6 +166,8 @@ export function createTelemetryStore({
 
   async function compact() {
     return withWriteLock(async () => {
+      clearScheduledFlush();
+      pendingEventCount = 0;
       const state = await readState();
       return writeState(state);
     });

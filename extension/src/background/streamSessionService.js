@@ -43,6 +43,9 @@ export function createStreamSessionService({
     const nextWatchStreakByChannel = {
       ...runtimeState.watchStreakByChannel
     };
+    const nextLastKnownWatchStreakByChannel = {
+      ...runtimeState.lastKnownWatchStreakByChannel
+    };
     const nextLastBroadcastStatsByChannel = {
       ...runtimeState.lastBroadcastStatsByChannel
     };
@@ -86,7 +89,10 @@ export function createStreamSessionService({
       baselineStreakValue: normalizeStreakValue(currentBroadcast?.baselineStreakValue),
       baselineStreakSeenAt: Math.round(Number(currentBroadcast?.baselineStreakSeenAt) || 0),
       streakIncreasedForStream: Boolean(currentBroadcast?.streakIncreasedForStream),
-      streakUnexpectedJumpForStream: Boolean(currentBroadcast?.streakUnexpectedJumpForStream)
+      streakUnexpectedJumpForStream: Boolean(currentBroadcast?.streakUnexpectedJumpForStream),
+      startupRecoveryReloadedAt: Math.round(
+        Number(currentBroadcast?.startupRecoveryReloadedAt) || 0
+      )
     };
 
     if (broadcastRestarted) {
@@ -124,6 +130,7 @@ export function createStreamSessionService({
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       watchStreakByChannel: nextWatchStreakByChannel,
+      lastKnownWatchStreakByChannel: nextLastKnownWatchStreakByChannel,
       lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
     });
 
@@ -331,6 +338,13 @@ export function createStreamSessionService({
         broadcastStartedAt: normalizedStartedAt
       }
     };
+    const nextLastKnownWatchStreakByChannel = {
+      ...runtimeState.lastKnownWatchStreakByChannel,
+      [channel]: {
+        value,
+        seenAt: now
+      }
+    };
     const nextBroadcastSessionsByChannel = {
       ...runtimeState.broadcastSessionsByChannel
     };
@@ -354,6 +368,7 @@ export function createStreamSessionService({
 
     await writeRuntimeState({
       watchStreakByChannel: nextWatchStreakByChannel,
+      lastKnownWatchStreakByChannel: nextLastKnownWatchStreakByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
       lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
     });
@@ -389,7 +404,8 @@ function createBroadcastSession({
     baselineStreakValue: null,
     baselineStreakSeenAt: 0,
     streakIncreasedForStream: false,
-    streakUnexpectedJumpForStream: false
+    streakUnexpectedJumpForStream: false,
+    startupRecoveryReloadedAt: 0
   };
 }
 
@@ -438,7 +454,8 @@ function getHighestKnownPositiveStreak(runtimeState, channel) {
     runtimeState.broadcastSessionsByChannel?.[channel]?.streakValue,
     runtimeState.broadcastSessionsByChannel?.[channel]?.baselineStreakValue,
     runtimeState.lastBroadcastStatsByChannel?.[channel]?.streakValue,
-    runtimeState.lastBroadcastStatsByChannel?.[channel]?.baselineStreakValue
+    runtimeState.lastBroadcastStatsByChannel?.[channel]?.baselineStreakValue,
+    runtimeState.lastKnownWatchStreakByChannel?.[channel]?.value
   ];
 
   let highest = 0;

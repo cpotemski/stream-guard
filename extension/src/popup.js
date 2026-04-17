@@ -1,5 +1,3 @@
-import { getChannelsLiveStatus } from "./lib/liveStatus.js";
-
 const channelList = document.getElementById("channel-list");
 const emptyState = document.getElementById("empty-state");
 const watchToggle = document.getElementById("watch-toggle");
@@ -8,20 +6,20 @@ const diagnosticsToggle = document.getElementById("diagnostics-toggle");
 const telemetryStatus = document.getElementById("telemetry-status");
 const telemetryExportButton = document.getElementById("telemetry-export");
 const telemetryClearButton = document.getElementById("telemetry-clear");
-const QUICK_POLL_INTERVAL_MS = 5000;
-const QUICK_POLL_WINDOW_MS = 30000;
-const SLOW_POLL_INTERVAL_MS = 60000;
+const STATUS_SYNC_INTERVAL_MS = 1000;
 const RENDER_INTERVAL_MS = 1000;
 const RUNTIME_STATE_KEYS = [
   "managedTabsByChannel",
   "detachedUntilByChannel",
+  "liveStatusByChannel",
   "watchSessionsByChannel",
   "broadcastSessionsByChannel",
   "lastBroadcastStatsByChannel",
   "claimStatsByChannel",
   "claimAvailabilityByChannel",
   "playbackStateByChannel",
-  "watchStreakByChannel"
+  "watchStreakByChannel",
+  "lastKnownWatchStreakByChannel"
 ];
 const SETTINGS_KEYS = [
   "autoManage",
@@ -31,7 +29,6 @@ const SETTINGS_KEYS = [
 
 let latestSnapshot = null;
 let refreshIntervalId = 0;
-let refreshWindowUntil = 0;
 let isRefreshing = false;
 let settingsUpdateInFlight = false;
 let watchToggleUpdateInFlight = false;
@@ -52,7 +49,6 @@ async function init() {
 }
 
 function startRefreshWindow() {
-  refreshWindowUntil = Date.now() + QUICK_POLL_WINDOW_MS;
   scheduleNextRefresh(0);
 }
 
@@ -103,14 +99,9 @@ async function refresh() {
       return;
     }
 
-    const liveStatusByChannel = await getChannelsLiveStatus(
-      response.settings.importantChannels.map((entry) => entry.name)
-    );
-
     latestSnapshot = {
       settings: response.settings,
       runtimeState: response.runtimeState,
-      liveStatusByChannel,
       telemetry: response.telemetry || null
     };
 
@@ -120,14 +111,11 @@ async function refresh() {
   }
 }
 
-function scheduleNextRefresh(delayMs = QUICK_POLL_INTERVAL_MS) {
+function scheduleNextRefresh(delayMs = STATUS_SYNC_INTERVAL_MS) {
   window.clearTimeout(refreshIntervalId);
   refreshIntervalId = window.setTimeout(() => {
     void refresh();
-
-    const now = Date.now();
-    const interval = now < refreshWindowUntil ? QUICK_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
-    scheduleNextRefresh(interval);
+    scheduleNextRefresh(STATUS_SYNC_INTERVAL_MS);
   }, delayMs);
 }
 
@@ -138,8 +126,7 @@ function renderCurrent() {
 
   render(
     latestSnapshot.settings,
-    latestSnapshot.runtimeState,
-    latestSnapshot.liveStatusByChannel
+    latestSnapshot.runtimeState
   );
 }
 
@@ -199,7 +186,7 @@ function applyStorageChanges(changes, areaName) {
   }
 }
 
-function render(settings, runtimeState, liveStatusByChannel) {
+function render(settings, runtimeState) {
   watchToggle.checked = settings.autoManage;
   watchToggle.disabled = watchToggleUpdateInFlight;
 
@@ -215,11 +202,17 @@ function render(settings, runtimeState, liveStatusByChannel) {
     label.className = "channel-label";
     const details = document.createElement("div");
     details.className = "channel-details";
-    const streamStatus = liveStatusByChannel[entry.name];
+    const streamStatus = runtimeState.liveStatusByChannel?.[entry.name] || "unknown";
     const isLive = streamStatus === "live";
     const hasRuntimeActiveSession = hasActiveRuntimeSession(entry.name, runtimeState);
     const channelBroadcastStats = getChannelBroadcastStats(entry.name, runtimeState);
-    const showStats = isLive || hasRuntimeActiveSession || Boolean(channelBroadcastStats);
+    const lastKnownWatchStreak = runtimeState?.lastKnownWatchStreakByChannel?.[entry.name];
+    const showStats = (
+      isLive
+      || hasRuntimeActiveSession
+      || Boolean(channelBroadcastStats)
+      || hasDisplayableWatchStreak(lastKnownWatchStreak)
+    );
 
     const status = document.createElement("span");
     status.className = "channel-status";
@@ -692,7 +685,7 @@ function getWatchStreakForDisplay(channel, runtimeState, broadcastStats) {
 
   const streakValue = Math.floor(Number(broadcastStats?.streakValue));
   if (!Number.isInteger(streakValue) || streakValue < 0) {
-    return runtimeStreak || null;
+    return runtimeStreak || runtimeState?.lastKnownWatchStreakByChannel?.[channel] || null;
   }
 
   return {
@@ -744,6 +737,11 @@ function isWatchStreakForBroadcast(streak, broadcastStats) {
   }
 
   return streakStartedAt > 0 && streakStartedAt === broadcastStartedAt;
+}
+
+function hasDisplayableWatchStreak(streak) {
+  const value = Number(streak?.value);
+  return Number.isInteger(value) && value >= 0;
 }
 
 function hasActiveRuntimeSession(channel, runtimeState) {

@@ -60,9 +60,7 @@ export function createOrchestratorService({
   }
 
   async function updateBadge(settings) {
-    const liveStatusByChannel = await getChannelsLiveStatus(
-      settings.importantChannels.map((entry) => entry.name)
-    );
+    const liveStatusByChannel = await refreshLiveStatus(settings);
     const count = Object.values(liveStatusByChannel)
       .filter((status) => status === "live")
       .length;
@@ -71,6 +69,18 @@ export function createOrchestratorService({
 
     await chrome.action.setBadgeText({ text });
     await chrome.action.setBadgeBackgroundColor({ color });
+  }
+
+  async function refreshLiveStatus(settings) {
+    const liveStatusByChannel = await getChannelsLiveStatus(
+      settings.importantChannels.map((entry) => entry.name)
+    );
+
+    await writeRuntimeState({
+      liveStatusByChannel
+    });
+
+    return liveStatusByChannel;
   }
 
   async function recordAndGetOrchestratorWakeGapMs() {
@@ -95,6 +105,7 @@ export function createOrchestratorService({
     onStartup,
     onAlarm,
     syncAlarm,
-    updateBadge
+    updateBadge,
+    refreshLiveStatus
   };
 }

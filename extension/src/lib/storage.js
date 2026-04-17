@@ -7,13 +7,15 @@ export const DEFAULT_SETTINGS = {
 export const DEFAULT_RUNTIME_STATE = {
   managedTabsByChannel: {},
   detachedUntilByChannel: {},
+  liveStatusByChannel: {},
   watchSessionsByChannel: {},
   broadcastSessionsByChannel: {},
   lastBroadcastStatsByChannel: {},
   claimStatsByChannel: {},
   claimAvailabilityByChannel: {},
   playbackStateByChannel: {},
-  watchStreakByChannel: {}
+  watchStreakByChannel: {},
+  lastKnownWatchStreakByChannel: {}
 };
 
 function normalizeChannel(entry, fallbackPriority) {
@@ -62,6 +64,7 @@ export async function getRuntimeState() {
   const stored = await chrome.storage.local.get(DEFAULT_RUNTIME_STATE);
   const managedTabsByChannel = normalizeManagedTabsByChannel(stored.managedTabsByChannel);
   const detachedUntilByChannel = normalizeDetachedUntilByChannel(stored.detachedUntilByChannel);
+  const liveStatusByChannel = normalizeLiveStatusByChannel(stored.liveStatusByChannel);
   const watchSessionsByChannel = normalizeWatchSessionsByChannel(stored.watchSessionsByChannel);
   const broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
     stored.broadcastSessionsByChannel
@@ -75,17 +78,22 @@ export async function getRuntimeState() {
   );
   const playbackStateByChannel = normalizePlaybackStateByChannel(stored.playbackStateByChannel);
   const watchStreakByChannel = normalizeWatchStreakByChannel(stored.watchStreakByChannel);
+  const lastKnownWatchStreakByChannel = normalizeLastKnownWatchStreakByChannel(
+    stored.lastKnownWatchStreakByChannel
+  );
 
   return {
     managedTabsByChannel,
     detachedUntilByChannel,
+    liveStatusByChannel,
     watchSessionsByChannel,
     broadcastSessionsByChannel,
     lastBroadcastStatsByChannel,
     claimStatsByChannel,
     claimAvailabilityByChannel,
     playbackStateByChannel,
-    watchStreakByChannel
+    watchStreakByChannel,
+    lastKnownWatchStreakByChannel
   };
 }
 
@@ -102,6 +110,10 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.detachedUntilByChannel !== undefined) {
     next.detachedUntilByChannel = normalizeDetachedUntilByChannel(partialState.detachedUntilByChannel);
+  }
+
+  if (partialState.liveStatusByChannel !== undefined) {
+    next.liveStatusByChannel = normalizeLiveStatusByChannel(partialState.liveStatusByChannel);
   }
 
   if (partialState.watchSessionsByChannel !== undefined) {
@@ -136,6 +148,12 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.watchStreakByChannel !== undefined) {
     next.watchStreakByChannel = normalizeWatchStreakByChannel(partialState.watchStreakByChannel);
+  }
+
+  if (partialState.lastKnownWatchStreakByChannel !== undefined) {
+    next.lastKnownWatchStreakByChannel = normalizeLastKnownWatchStreakByChannel(
+      partialState.lastKnownWatchStreakByChannel
+    );
   }
 
   await chrome.storage.local.set(next);
@@ -231,6 +249,28 @@ function normalizeWatchSessionsByChannel(value) {
   );
 }
 
+function normalizeLiveStatusByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, rawStatus]) => [
+        String(channel || "").toLowerCase(),
+        normalizeLiveStatus(rawStatus)
+      ])
+      .filter(([channel, status]) => channel && status)
+  );
+}
+
+function normalizeLiveStatus(value) {
+  const status = String(value || "").toLowerCase();
+  if (status === "live" || status === "offline" || status === "unknown") {
+    return status;
+  }
+
+  return null;
+}
+
 function normalizeWatchSession(value) {
   const startedAt = Math.round(Number(value?.startedAt));
 
@@ -266,6 +306,7 @@ function normalizeBroadcastSession(value) {
   const streakSeenAt = Math.round(Number(value?.streakSeenAt));
   const baselineStreakValue = normalizeStreakValue(value?.baselineStreakValue);
   const baselineStreakSeenAt = Math.round(Number(value?.baselineStreakSeenAt));
+  const startupRecoveryReloadedAt = Math.round(Number(value?.startupRecoveryReloadedAt));
 
   if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
     return null;
@@ -286,6 +327,10 @@ function normalizeBroadcastSession(value) {
     baselineStreakValue,
     baselineStreakSeenAt: Number.isFinite(baselineStreakSeenAt) && baselineStreakSeenAt > 0
       ? baselineStreakSeenAt
+      : 0,
+    startupRecoveryReloadedAt: Number.isFinite(startupRecoveryReloadedAt)
+      && startupRecoveryReloadedAt > 0
+      ? startupRecoveryReloadedAt
       : 0
   };
 }
@@ -421,6 +466,19 @@ function normalizeWatchStreakByChannel(value) {
   );
 }
 
+function normalizeLastKnownWatchStreakByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, rawStreak]) => [
+        String(channel || "").toLowerCase(),
+        normalizeLastKnownWatchStreak(rawStreak)
+      ])
+      .filter(([channel, streak]) => channel && streak)
+  );
+}
+
 function normalizeWatchStreak(value) {
   const streakValue = Math.floor(Number(value?.value));
   if (!Number.isInteger(streakValue) || streakValue < 0) {
@@ -439,6 +497,23 @@ function normalizeWatchStreak(value) {
     broadcastStartedAt: Number.isFinite(broadcastStartedAt) && broadcastStartedAt > 0
       ? broadcastStartedAt
       : 0
+  };
+}
+
+function normalizeLastKnownWatchStreak(value) {
+  const streakValue = Math.floor(Number(value?.value));
+  if (!Number.isInteger(streakValue) || streakValue < 0) {
+    return null;
+  }
+
+  const seenAt = Math.round(Number(value?.seenAt));
+  if (!Number.isFinite(seenAt) || seenAt <= 0) {
+    return null;
+  }
+
+  return {
+    value: streakValue,
+    seenAt
   };
 }
 
