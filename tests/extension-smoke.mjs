@@ -724,25 +724,6 @@ async function inspectTwitchStreak(channelPage) {
         return true;
       }
 
-      function findWatchStreakIconAnchors(root) {
-        if (!(root instanceof HTMLElement)) {
-          return [];
-        }
-
-        return [...root.querySelectorAll("img, svg, [data-a-target], [class], [aria-label]")]
-          .filter((node) => node instanceof HTMLElement)
-          .filter((node) => {
-            const text = [
-              node.getAttribute("aria-label") || "",
-              node.getAttribute("data-a-target") || "",
-              node.getAttribute("class") || "",
-              node.getAttribute("alt") || "",
-              node.textContent || ""
-            ].join(" ").toLowerCase();
-            return text.includes("streak") || text.includes("watch");
-          });
-      }
-
       function isInsideExcludedStreakArea(node) {
         if (!(node instanceof Element)) {
           return false;
@@ -813,6 +794,40 @@ async function inspectTwitchStreak(channelPage) {
         return null;
       }
 
+      function findWatchStreakControllerLabel(dialog, controller) {
+        if (!(dialog instanceof HTMLElement) || !(controller instanceof HTMLElement)) {
+          return null;
+        }
+
+        const controllerId = controller.getAttribute("id");
+        if (!controllerId) {
+          return null;
+        }
+
+        const label = dialog.querySelector(`label[for='${CSS.escape(controllerId)}']`);
+        return label instanceof HTMLElement ? label : null;
+      }
+
+      async function expandWatchStreakFooter(dialog) {
+        if (!(dialog instanceof HTMLElement) || dialog.querySelector("#watch-streak-footer")) {
+          return false;
+        }
+
+        const controller = dialog.querySelector("[aria-controls='watch-streak-footer']");
+        if (!(controller instanceof HTMLElement)) {
+          return false;
+        }
+
+        if (controller instanceof HTMLInputElement && controller.checked) {
+          return true;
+        }
+
+        const clickTarget = findWatchStreakControllerLabel(dialog, controller) || controller;
+        clickTarget.click();
+        await wait(400);
+        return dialog.querySelector("#watch-streak-footer") instanceof HTMLElement;
+      }
+
       function extractWatchStreakValueFromDialog(dialog) {
         const footer = dialog.querySelector("#watch-streak-footer");
         if (footer instanceof HTMLElement) {
@@ -826,27 +841,30 @@ async function inspectTwitchStreak(channelPage) {
           }
         }
 
-        const controlledInputs = dialog.querySelectorAll("input[aria-controls='watch-streak-footer']");
+        const controlledInputs = dialog.querySelectorAll("[aria-controls='watch-streak-footer']");
         for (const input of controlledInputs) {
-          if (!(input instanceof HTMLInputElement) || !input.id) {
+          if (!(input instanceof HTMLElement)) {
             continue;
           }
 
-          const label = dialog.querySelector(`label[for='${CSS.escape(input.id)}']`);
-          if (!(label instanceof HTMLElement)) {
-            continue;
-          }
+          const label = findWatchStreakControllerLabel(dialog, input);
+          const candidates = [
+            input,
+            label,
+            ...(label instanceof HTMLElement ? [...label.querySelectorAll("strong, p, span, div")] : [])
+          ].filter((node) => node instanceof HTMLElement)
+            .filter((node) => !isInsideExcludedStreakArea(node));
 
-          if (findWatchStreakIconAnchors(label).length === 0) {
-            continue;
+          const value = extractIntegerFromPreferredNodes(candidates);
+          if (Number.isInteger(value) && value >= 0) {
+            return value;
           }
+        }
 
-          const value = extractIntegerFromPreferredNodes(
-            [...label.querySelectorAll("strong")]
-              .filter((node) => node instanceof HTMLElement)
-              .filter((node) => !isInsideExcludedStreakArea(node))
-          );
-          if (value !== null) {
+        const indicatorRoots = findWatchStreakIndicatorRoots(dialog);
+        for (const root of indicatorRoots) {
+          const value = extractIntegerFromPreferredNodes(getPreferredWatchStreakNodes(root));
+          if (Number.isInteger(value) && value >= 0) {
             return value;
           }
         }
@@ -854,18 +872,51 @@ async function inspectTwitchStreak(channelPage) {
         return null;
       }
 
-      function hasVisibleWatchStreakUi(dialog) {
-        if (!(dialog instanceof HTMLElement)) {
-          return false;
+      function getPreferredWatchStreakNodes(root) {
+        if (!(root instanceof HTMLElement)) {
+          return [];
         }
 
-        return Boolean(
-          dialog.querySelector("#watch-streak-footer")
-          || dialog.querySelector("[aria-controls='watch-streak-footer']")
-          || [...dialog.querySelectorAll("*")].some((node) => {
-            if (!(node instanceof HTMLElement)) {
-              return false;
-            }
+        const flameIcon = findWatchStreakFlameIcon(root);
+        const headerRow = findWatchStreakHeaderRow(root, flameIcon);
+        if (headerRow instanceof HTMLElement) {
+          return [
+            headerRow,
+            ...headerRow.querySelectorAll("strong, [role='status'], p, span, div")
+          ].filter((node) => node instanceof HTMLElement);
+        }
+
+        return [
+          ...root.querySelectorAll("strong, [role='status'], p, span, div")
+        ].filter((node) => node instanceof HTMLElement);
+      }
+
+      function findWatchStreakHeaderRow(root, flameIcon) {
+        if (!(root instanceof HTMLElement) || !(flameIcon instanceof SVGElement)) {
+          return null;
+        }
+
+        let current = flameIcon.parentElement;
+        while (current instanceof HTMLElement && current !== root) {
+          const text = String(current.textContent || "").trim();
+          if (/\\d/.test(text) && !current.querySelector("[role='progressbar']")) {
+            return current;
+          }
+          current = current.parentElement;
+        }
+
+        return null;
+      }
+
+      function findWatchStreakIndicatorRoots(dialog) {
+        if (!(dialog instanceof HTMLElement)) {
+          return [];
+        }
+
+        const structuredCandidates = findStructuredWatchStreakRoots(dialog);
+        const textCandidates = [...dialog.querySelectorAll("button, label, [role='button'], div, section")]
+          .filter((node) => node instanceof HTMLElement)
+          .filter((node) => {
             const text = [
               node.getAttribute("aria-label") || "",
               node.getAttribute("data-a-target") || "",
@@ -878,6 +929,79 @@ async function inspectTwitchStreak(channelPage) {
               || text.includes("daily bonus")
             );
           })
+          .filter((node) => !isInsideExcludedStreakArea(node));
+
+        return dedupeElements([...structuredCandidates, ...textCandidates]);
+      }
+
+      function dedupeElements(nodes) {
+        const seen = new Set();
+        const result = [];
+
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement) || seen.has(node)) {
+            continue;
+          }
+          seen.add(node);
+          result.push(node);
+        }
+
+        return result;
+      }
+
+      function findStructuredWatchStreakRoots(dialog) {
+        if (!(dialog instanceof HTMLElement)) {
+          return [];
+        }
+
+        return dedupeElements(
+          [...dialog.querySelectorAll("div, section, button")]
+            .filter((node) => node instanceof HTMLElement)
+            .filter((node) => !isInsideExcludedStreakArea(node))
+            .filter((node) => hasWatchStreakFlameIcon(node))
+            .filter((node) => node.querySelector("[role='progressbar']"))
+        );
+      }
+
+      function hasWatchStreakFlameIcon(root) {
+        return Boolean(findWatchStreakFlameIcon(root));
+      }
+
+      function findWatchStreakFlameIcon(root) {
+        if (!(root instanceof HTMLElement)) {
+          return null;
+        }
+
+        const icons = [...root.querySelectorAll("svg")]
+          .filter((icon) => icon instanceof SVGElement);
+
+        for (const icon of icons) {
+          const paths = [...icon.querySelectorAll("path")]
+            .map((path) => normalizeSvgPathData(path.getAttribute("d")));
+          if (
+            paths.some((path) => path.includes("M5.2958.05102l342-33.85.067"))
+            || paths.some((path) => path.includes("A7.3337.33300113.66722h-3.405"))
+          ) {
+            return icon;
+          }
+        }
+
+        return null;
+      }
+
+      function normalizeSvgPathData(value) {
+        return String(value || "").replace(/\\s+/g, "");
+      }
+
+      function hasVisibleWatchStreakUi(dialog) {
+        if (!(dialog instanceof HTMLElement)) {
+          return false;
+        }
+
+        return Boolean(
+          dialog.querySelector("#watch-streak-footer")
+          || dialog.querySelector("[aria-controls='watch-streak-footer']")
+          || findWatchStreakIndicatorRoots(dialog).length > 0
         );
       }
 
@@ -906,6 +1030,7 @@ async function inspectTwitchStreak(channelPage) {
 
       const hadIntroScreen = await advanceRewardCenterPastIntro(dialog);
       dialog = findRewardCenterDialog() || dialog;
+      await expandWatchStreakFooter(dialog);
       const value = extractWatchStreakValueFromDialog(dialog);
       const hasStreakUi = hasVisibleWatchStreakUi(dialog);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
