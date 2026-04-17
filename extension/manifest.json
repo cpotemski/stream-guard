@@ -38,7 +38,12 @@
       ],
       "js": [
         "src/lib/channelState.js",
-        "src/content.js"
+        "src/content/core.js",
+        "src/content/ui.js",
+        "src/content/claims.js",
+        "src/content/streak.js",
+        "src/content/playback.js",
+        "src/content/bootstrap.js"
       ],
       "css": [
         "src/styles.css"
