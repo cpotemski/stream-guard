@@ -37,6 +37,7 @@
         "https://www.twitch.tv/*"
       ],
       "js": [
+        "src/lib/channelState.js",
         "src/content.js"
       ],
       "css": [
