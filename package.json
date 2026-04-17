@@ -1,0 +1,18 @@
+{
+  "name": "stream-guard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "browser:session": "node scripts/project-browser-session.mjs",
+    "browser:session:reset": "node scripts/project-browser-session.mjs --reset-profile",
+    "browser:extensions": "STREAM_GUARD_START_URL='chrome://extensions/' node scripts/project-browser-session.mjs",
+    "test:smoke": "node tests/extension-smoke.mjs",
+    "test:smoke:popup": "TEST_SCOPE=popup node tests/extension-smoke.mjs",
+    "test:smoke:channel": "TEST_SCOPE=channel node tests/extension-smoke.mjs",
+    "test:smoke:streak": "TEST_SCOPE=streak node tests/extension-smoke.mjs",
+    "test:smoke:playback": "TEST_SCOPE=playback node tests/extension-smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.54.2"
+  }
+}
