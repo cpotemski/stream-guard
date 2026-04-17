@@ -53,7 +53,7 @@
       return runtimeStreak;
     }
 
-    const streakValue = Math.floor(Number(broadcastStats?.streakValue));
+    const streakValue = normalizeDisplayableStreakValue(broadcastStats?.streakValue);
     if (!Number.isInteger(streakValue) || streakValue < 0) {
       return runtimeStreak || runtimeState?.lastKnownWatchStreakByChannel?.[channel] || null;
     }
@@ -87,6 +87,15 @@
   function isValidBroadcastStats(stats) {
     const startedAt = Math.round(Number(stats?.estimatedStartedAt));
     return Number.isFinite(startedAt) && startedAt > 0;
+  }
+
+  function normalizeDisplayableStreakValue(value) {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+
+    const normalized = Math.floor(Number(value));
+    return Number.isInteger(normalized) && normalized >= 0 ? normalized : null;
   }
 
   function isSameBroadcast(left, right) {
@@ -128,6 +137,7 @@
     isClaimAvailable,
     getClaimStatsForDisplay,
     getWatchStreakForDisplay,
+    normalizeDisplayableStreakValue,
     getChannelBroadcastStats,
     isValidBroadcastStats,
     isSameBroadcast,

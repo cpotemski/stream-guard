@@ -55,6 +55,7 @@ async function reportWatchStreak() {
   const wasOpenBefore = Boolean(findRewardCenterDialog());
   let hadDialog = false;
   let hadPrimaryContainer = false;
+  let hadIntroScreen = false;
   let parserSource = "none";
   let primaryValue = null;
 
@@ -80,11 +81,15 @@ async function reportWatchStreak() {
       hadDialog = Boolean(dialog);
     }
 
+    if (dialog) {
+      hadIntroScreen = await advanceRewardCenterPastIntro(dialog);
+    }
+
     const parserResult = dialog
       ? await waitForResult(
         () => {
           const result = extractWatchStreakValueFromDialog(dialog);
-          if (result.hadPrimaryContainer) {
+          if (result.hadPrimaryContainer || result.hadStreakIndicators) {
             return result;
           }
           return null;
@@ -112,12 +117,14 @@ async function reportWatchStreak() {
     );
     await sendStreakProbeLog(channel, "streak-no-valid-candidate", {
       hadPrimaryContainer,
+      hadIntroScreen,
       primaryValue
     });
     await sendStreakProbeLog(channel, "streak-could-not-be-found", {
       wasOpenBefore,
       hadDialog,
-      hadPrimaryContainer
+      hadPrimaryContainer,
+      hadIntroScreen
     });
     return;
   }
@@ -253,18 +260,31 @@ function extractWatchStreakValueFromDialog(dialog) {
       value: null,
       source: "none",
       primaryValue: null,
-      hadPrimaryContainer: false
+      hadPrimaryContainer: false,
+      hadStreakIndicators: false
     };
   }
 
   const primaryResult = tryPrimaryWatchStreakValue(dialog);
+  const fallbackResult = tryFallbackWatchStreakValue(dialog);
 
   if (Number.isInteger(primaryResult.value) && primaryResult.value >= 0) {
     return {
       value: primaryResult.value,
       source: "primary",
       primaryValue: primaryResult.value,
-      hadPrimaryContainer: primaryResult.hadContainer
+      hadPrimaryContainer: primaryResult.hadContainer,
+      hadStreakIndicators: primaryResult.hadContainer || fallbackResult.hadIndicator
+    };
+  }
+
+  if (Number.isInteger(fallbackResult.value) && fallbackResult.value >= 0) {
+    return {
+      value: fallbackResult.value,
+      source: "fallback",
+      primaryValue: primaryResult.value,
+      hadPrimaryContainer: primaryResult.hadContainer,
+      hadStreakIndicators: true
     };
   }
 
@@ -272,7 +292,8 @@ function extractWatchStreakValueFromDialog(dialog) {
     value: null,
     source: "none",
     primaryValue: primaryResult.value,
-    hadPrimaryContainer: primaryResult.hadContainer
+    hadPrimaryContainer: primaryResult.hadContainer,
+    hadStreakIndicators: fallbackResult.hadIndicator
   };
 }
 
@@ -357,6 +378,99 @@ function findPrimaryWatchStreakContainer(dialog) {
   }
 
   return null;
+}
+
+function tryFallbackWatchStreakValue(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return { value: null, hadIndicator: false };
+  }
+
+  const indicatorRoots = findWatchStreakIndicatorRoots(dialog);
+  if (indicatorRoots.length === 0) {
+    return { value: null, hadIndicator: false };
+  }
+
+  for (const root of indicatorRoots) {
+    const preferredNodes = [
+      ...root.querySelectorAll("strong, [role='status'], p, span, div")
+    ].filter((node) => node instanceof HTMLElement);
+    const value = extractIntegerFromPreferredNodes(preferredNodes);
+    if (value !== null) {
+      return { value, hadIndicator: true };
+    }
+  }
+
+  return { value: null, hadIndicator: true };
+}
+
+function findWatchStreakIndicatorRoots(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return [];
+  }
+
+  const candidates = [...dialog.querySelectorAll("button, label, [role='button'], div, section")]
+    .filter((node) => node instanceof HTMLElement)
+    .filter((node) => {
+      const text = [
+        node.getAttribute("aria-label") || "",
+        node.getAttribute("data-a-target") || "",
+        node.getAttribute("class") || "",
+        node.textContent || ""
+      ].join(" ").toLowerCase();
+
+      return (
+        text.includes("watch streak")
+        || text.includes("watch-streak")
+        || text.includes("daily bonus")
+      );
+    })
+    .filter((node) => !isInsideExcludedStreakArea(node));
+
+  return dedupeElements(candidates);
+}
+
+function dedupeElements(nodes) {
+  const seen = new Set();
+  const result = [];
+
+  for (const node of nodes) {
+    if (!(node instanceof HTMLElement) || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    result.push(node);
+  }
+
+  return result;
+}
+
+async function advanceRewardCenterPastIntro(dialog) {
+  if (!(dialog instanceof HTMLElement)) {
+    return false;
+  }
+
+  const introButton = [...dialog.querySelectorAll("button")]
+    .find((button) => /get started/i.test(String(button.textContent || "").trim()));
+
+  if (!(introButton instanceof HTMLButtonElement)) {
+    return false;
+  }
+
+  introButton.click();
+  await wait(WATCH_STREAK_MENU_TOGGLE_DELAY_MS);
+  await waitForResult(() => {
+    const activeDialog = findRewardCenterDialog();
+    if (!(activeDialog instanceof HTMLElement)) {
+      return null;
+    }
+
+    const stillShowingIntro = [...activeDialog.querySelectorAll("button")]
+      .some((button) => /get started/i.test(String(button.textContent || "").trim()));
+
+    return stillShowingIntro ? null : true;
+  }, WATCH_STREAK_DIALOG_WAIT_TIMEOUT_MS);
+
+  return true;
 }
 
 function extractIntegerFromPreferredNodes(nodes) {

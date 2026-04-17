@@ -311,7 +311,9 @@ function getInlineStatsRenderKey(channel, isImportant, runtimeState) {
       0,
       Math.floor(Number(claimStats?.count ?? broadcastStats?.claimCount) || 0)
     ),
-    streakValue: Math.floor(Number(streak?.value ?? broadcastStats?.streakValue)),
+    streakValue: globalThis.StreamGuardChannelState.normalizeDisplayableStreakValue(
+      streak?.value ?? broadcastStats?.streakValue
+    ),
     streakIncreased: Boolean(
       broadcastStats?.streakIncreasedForStream || streak?.increased
     ),

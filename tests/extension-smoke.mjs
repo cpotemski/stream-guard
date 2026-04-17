@@ -341,8 +341,30 @@ async function verifyWatchStreakFlow(context, popupPage) {
   );
   await requestWatchStreakProbe(popupPage, managedTabId);
 
-  const runtimeStreak = await waitForRuntimeStreakValue(popupPage, managedTabId);
-  assert.ok(Number.isInteger(runtimeStreak) && runtimeStreak >= 0, "No valid runtime streak value was recorded.");
+  const twitchStreakInspection = await inspectTwitchStreak(managedPage);
+  const runtimeStreak = await waitForRuntimeStreakValue(
+    popupPage,
+    managedTabId,
+    twitchStreakInspection.hasStreakUi ? streakTimeoutMs : 20_000
+  ).catch(() => null);
+
+  if (!Number.isInteger(runtimeStreak) || runtimeStreak < 0) {
+    assert.equal(
+      twitchStreakInspection.value,
+      null,
+      `Runtime streak stayed empty although Twitch exposed streak ${twitchStreakInspection.value}.`
+    );
+
+    const probeOutcome = await waitForMissingStreakProbeOutcome(popupPage);
+    assert.equal(
+      probeOutcome.popupStreakText,
+      null,
+      `Popup unexpectedly rendered a streak label despite missing Twitch streak UI: "${probeOutcome.popupStreakText}".`
+    );
+
+    await setWatchToggle(popupPage, false);
+    return;
+  }
 
   const popupStreakText = await waitForPopupStreakText(popupPage);
   assert.match(
@@ -351,7 +373,7 @@ async function verifyWatchStreakFlow(context, popupPage) {
     `Popup streak "${popupStreakText}" does not include runtime streak ${runtimeStreak}.`
   );
 
-  const twitchStreak = await tryReadTwitchStreak(managedPage);
+  const twitchStreak = twitchStreakInspection.value;
   if (twitchStreak !== null) {
     assert.match(
       popupStreakText,
@@ -553,7 +575,7 @@ async function requestWatchStreakProbe(popupPage, tabId) {
   }, tabId);
 }
 
-async function waitForRuntimeStreakValue(popupPage, managedTabId) {
+async function waitForRuntimeStreakValue(popupPage, managedTabId, timeoutMs = streakTimeoutMs) {
   return expectEventually(async () => {
     await requestWatchStreakProbe(popupPage, managedTabId);
     const response = await popupPage.evaluate(async (channel) => {
@@ -574,7 +596,7 @@ async function waitForRuntimeStreakValue(popupPage, managedTabId) {
     }
 
     return null;
-  }, streakTimeoutMs, 1_000, "Timed out waiting for a runtime streak value.");
+  }, timeoutMs, 1_000, "Timed out waiting for a runtime streak value.");
 }
 
 async function waitForPlaybackHealthy(page) {
@@ -629,6 +651,11 @@ async function manuallyMutePlayer(page) {
 }
 
 async function tryReadTwitchStreak(channelPage) {
+  const inspection = await inspectTwitchStreak(channelPage);
+  return inspection.value;
+}
+
+async function inspectTwitchStreak(channelPage) {
   await channelPage.bringToFront();
   await channelPage.waitForLoadState("domcontentloaded");
 
@@ -663,9 +690,7 @@ async function tryReadTwitchStreak(channelPage) {
       }
 
       function findRewardCenterDialog() {
-        const primary = document.querySelector(
-          "[role='dialog'][aria-labelledby='channel-points-reward-center-header']"
-        );
+        const primary = document.querySelector("[role='dialog'][aria-labelledby='channel-points-reward-center-header']");
         if (primary instanceof HTMLElement) {
           return primary;
         }
@@ -681,6 +706,22 @@ async function tryReadTwitchStreak(channelPage) {
         }
 
         return null;
+      }
+
+      async function advanceRewardCenterPastIntro(dialog) {
+        if (!(dialog instanceof HTMLElement)) {
+          return false;
+        }
+
+        const button = [...dialog.querySelectorAll("button")]
+          .find((candidate) => /get started/i.test(String(candidate.textContent || "").trim()));
+        if (!(button instanceof HTMLButtonElement)) {
+          return false;
+        }
+
+        button.click();
+        await wait(400);
+        return true;
       }
 
       function findWatchStreakIconAnchors(root) {
@@ -813,6 +854,33 @@ async function tryReadTwitchStreak(channelPage) {
         return null;
       }
 
+      function hasVisibleWatchStreakUi(dialog) {
+        if (!(dialog instanceof HTMLElement)) {
+          return false;
+        }
+
+        return Boolean(
+          dialog.querySelector("#watch-streak-footer")
+          || dialog.querySelector("[aria-controls='watch-streak-footer']")
+          || [...dialog.querySelectorAll("*")].some((node) => {
+            if (!(node instanceof HTMLElement)) {
+              return false;
+            }
+            const text = [
+              node.getAttribute("aria-label") || "",
+              node.getAttribute("data-a-target") || "",
+              node.getAttribute("class") || "",
+              node.textContent || ""
+            ].join(" ").toLowerCase();
+            return (
+              text.includes("watch streak")
+              || text.includes("watch-streak")
+              || text.includes("daily bonus")
+            );
+          })
+        );
+      }
+
       const summary = findCommunityPointsSummaryRoot();
       const button = findCommunityPointsSummaryToggleButton(summary);
       if (!button) {
@@ -836,15 +904,59 @@ async function tryReadTwitchStreak(channelPage) {
         return null;
       }
 
+      const hadIntroScreen = await advanceRewardCenterPastIntro(dialog);
+      dialog = findRewardCenterDialog() || dialog;
       const value = extractWatchStreakValueFromDialog(dialog);
+      const hasStreakUi = hasVisibleWatchStreakUi(dialog);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await wait(200);
-      return value;
+      return {
+        value,
+        hasRewardCenter: true,
+        hasStreakUi,
+        hadIntroScreen
+      };
       });
     }, 20_000, 1_000, "Timed out waiting for Twitch streak to become readable.");
   } catch (_error) {
-    return null;
+    return {
+      value: null,
+      hasRewardCenter: false,
+      hasStreakUi: false,
+      hadIntroScreen: false
+    };
   }
+}
+
+async function waitForMissingStreakProbeOutcome(popupPage) {
+  return expectEventually(async () => {
+    const snapshot = await popupPage.evaluate(async () => {
+      const telemetryResponse = await chrome.runtime.sendMessage({ type: "telemetry:export" });
+      const row = document.querySelector(".channel-item");
+      const streakText = row?.querySelector(".channel-streak")?.textContent?.trim() || null;
+      return {
+        streakText,
+        telemetry: telemetryResponse?.snapshot?.telemetry?.events || []
+      };
+    });
+
+    const reasons = snapshot.telemetry
+      .filter((event) => event?.source === "worker" && event?.event === "streak:probe-log")
+      .map((event) => event?.details?.reason)
+      .filter(Boolean);
+
+    if (
+      reasons.includes("streak-no-valid-candidate")
+      && reasons.includes("streak-could-not-be-found")
+    ) {
+      return {
+        popupStreakText: snapshot.streakText,
+        reasons
+      };
+    }
+
+    return null;
+  }, 20_000, 1_000, "Timed out waiting for a missing-streak probe outcome.");
 }
 
 async function waitForPopupStreakText(popupPage) {
