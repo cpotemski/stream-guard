@@ -22,7 +22,6 @@ const WATCH_GROUP_TITLE = "Stream Guard";
 const STATE_CACHE_TTL_MS = 1500;
 const AUTH_CACHE_TTL_MS = 3000;
 const WAKE_GAP_THRESHOLD_MS = 180000;
-const BROADCAST_SESSION_RETENTION_MS = 900000;
 const DETACHED_REOPEN_COOLDOWN_MS = 300000;
 const STARTUP_RECOVERY_RELOAD_THRESHOLD_MS = 1080000;
 const WORKER_LOG_PREFIX = "[Stream Guard]";
@@ -51,7 +50,6 @@ const tabLifecycleService = createTabLifecycleService({
   getChannelFromTab,
   logWorkerEvent: workerLogger.logWorkerEvent,
   detachedReopenCooldownMs: DETACHED_REOPEN_COOLDOWN_MS,
-  broadcastSessionRetentionMs: BROADCAST_SESSION_RETENTION_MS,
   startupRecoveryReloadThresholdMs: STARTUP_RECOVERY_RELOAD_THRESHOLD_MS
 });
 

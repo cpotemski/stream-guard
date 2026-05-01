@@ -8,7 +8,6 @@ export function createTabLifecycleService({
   getChannelFromTab,
   logWorkerEvent,
   detachedReopenCooldownMs,
-  broadcastSessionRetentionMs,
   startupRecoveryReloadThresholdMs
 }) {
   async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
@@ -62,14 +61,13 @@ export function createTabLifecycleService({
 
     for (const [channel, tabId] of Object.entries(runtimeState.managedTabsByChannel)) {
       if (!desiredChannels.has(channel)) {
-        const keepRecentBroadcastSession = shouldRetainBroadcastSession(
-          nextBroadcastSessionsByChannel[channel],
-          now
+        const keepBroadcastSession = hasPersistedBroadcastSession(
+          nextBroadcastSessionsByChannel[channel]
         );
         await logWorkerEvent("reconcile:close-not-desired", {
           channel,
           tabId,
-          keepRecentBroadcastSession
+          keepBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
         markBroadcastEnded(
@@ -83,7 +81,7 @@ export function createTabLifecycleService({
         delete nextClaimStatsByChannel[channel];
         delete nextClaimAvailabilityByChannel[channel];
         delete nextPlaybackStateByChannel[channel];
-        if (!keepRecentBroadcastSession) {
+        if (!keepBroadcastSession) {
           delete nextBroadcastSessionsByChannel[channel];
           delete nextWatchStreakByChannel[channel];
         }
@@ -93,14 +91,13 @@ export function createTabLifecycleService({
 
       const tab = await getExistingTab(tabId);
       if (!tab) {
-        const keepRecentBroadcastSession = shouldRetainBroadcastSession(
-          nextBroadcastSessionsByChannel[channel],
-          now
+        const keepBroadcastSession = hasPersistedBroadcastSession(
+          nextBroadcastSessionsByChannel[channel]
         );
         await logWorkerEvent("reconcile:drop-missing-tab", {
           channel,
           tabId,
-          keepRecentBroadcastSession
+          keepBroadcastSession
         });
         markBroadcastEnded(
           nextLastBroadcastStatsByChannel,
@@ -113,7 +110,7 @@ export function createTabLifecycleService({
         delete nextClaimStatsByChannel[channel];
         delete nextClaimAvailabilityByChannel[channel];
         delete nextPlaybackStateByChannel[channel];
-        if (!keepRecentBroadcastSession) {
+        if (!keepBroadcastSession) {
           delete nextBroadcastSessionsByChannel[channel];
           delete nextWatchStreakByChannel[channel];
         }
@@ -133,9 +130,8 @@ export function createTabLifecycleService({
       }
 
       if (currentChannel !== channel) {
-        const keepRecentBroadcastSession = shouldRetainBroadcastSession(
-          nextBroadcastSessionsByChannel[channel],
-          now
+        const keepBroadcastSession = hasPersistedBroadcastSession(
+          nextBroadcastSessionsByChannel[channel]
         );
         await logWorkerEvent("reconcile:close-detached", {
           channel,
@@ -143,7 +139,7 @@ export function createTabLifecycleService({
           status: tab.status,
           currentChannel,
           url: tab.pendingUrl || tab.url || null,
-          keepRecentBroadcastSession
+          keepBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
         markBroadcastEnded(
@@ -157,7 +153,7 @@ export function createTabLifecycleService({
         delete nextClaimStatsByChannel[channel];
         delete nextClaimAvailabilityByChannel[channel];
         delete nextPlaybackStateByChannel[channel];
-        if (!keepRecentBroadcastSession) {
+        if (!keepBroadcastSession) {
           delete nextBroadcastSessionsByChannel[channel];
           delete nextWatchStreakByChannel[channel];
         }
@@ -215,11 +211,10 @@ export function createTabLifecycleService({
         nextWatchSessionsByChannel[channel] = {
           startedAt: Date.now()
         };
-        const keepRecentBroadcastSession = shouldRetainBroadcastSession(
-          nextBroadcastSessionsByChannel[channel],
-          now
+        const keepBroadcastSession = hasPersistedBroadcastSession(
+          nextBroadcastSessionsByChannel[channel]
         );
-        if (!keepRecentBroadcastSession) {
+        if (!keepBroadcastSession) {
           delete nextBroadcastSessionsByChannel[channel];
           delete nextWatchStreakByChannel[channel];
         }
@@ -243,7 +238,7 @@ export function createTabLifecycleService({
         await logWorkerEvent("reconcile:open-tab", {
           channel,
           tabId,
-          keepRecentBroadcastSession
+          keepBroadcastSession
         });
       }
     }
@@ -270,7 +265,7 @@ export function createTabLifecycleService({
 
     for (const channel of Object.keys(nextBroadcastSessionsByChannel)) {
       if (!assignedChannels.has(channel)
-        && !shouldRetainBroadcastSession(nextBroadcastSessionsByChannel[channel], now)) {
+        && !hasPersistedBroadcastSession(nextBroadcastSessionsByChannel[channel])) {
         delete nextBroadcastSessionsByChannel[channel];
       }
     }
@@ -294,11 +289,10 @@ export function createTabLifecycleService({
     }
 
     for (const channel of Object.keys(nextWatchStreakByChannel)) {
-      const hasRecentBroadcastSession = shouldRetainBroadcastSession(
-        nextBroadcastSessionsByChannel[channel],
-        now
+      const hasPersistedSession = hasPersistedBroadcastSession(
+        nextBroadcastSessionsByChannel[channel]
       );
-      if (!assignedChannels.has(channel) && !hasRecentBroadcastSession) {
+      if (!assignedChannels.has(channel) && !hasPersistedSession) {
         delete nextWatchStreakByChannel[channel];
       }
     }
@@ -454,15 +448,6 @@ export function createTabLifecycleService({
     }
   }
 
-  function shouldRetainBroadcastSession(session, now = Date.now()) {
-    const lastSeenAt = Number(session?.lastSeenAt);
-    if (!Number.isFinite(lastSeenAt) || lastSeenAt <= 0) {
-      return false;
-    }
-
-    return Math.max(0, now - lastSeenAt) <= broadcastSessionRetentionMs;
-  }
-
   async function requestPlaybackStateForManagedTabs(managedTabsByChannel) {
     const entries = Object.entries(managedTabsByChannel || {});
     const targets = entries.filter(([, tabId]) => Number.isInteger(tabId));
@@ -488,6 +473,11 @@ export function createTabLifecycleService({
     recoverManagedTabsAfterWake,
     requestWatchStreakForManagedTab
   };
+}
+
+function hasPersistedBroadcastSession(session) {
+  const estimatedStartedAt = Math.round(Number(session?.estimatedStartedAt));
+  return Number.isFinite(estimatedStartedAt) && estimatedStartedAt > 0;
 }
 
 function shouldTriggerStartupRecoveryReload({ broadcastSession, watchSession, now, thresholdMs }) {

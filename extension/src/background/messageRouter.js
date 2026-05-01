@@ -34,18 +34,34 @@ export function createMessageRouter({
         return { settings, runtimeState, telemetry };
       }
       case "channel:toggle": {
+        const previousSettings = await readSettingsCached();
         const settings = await toggleImportantChannel(message.channel);
+        const removedChannels = getRemovedChannels(
+          previousSettings.importantChannels,
+          settings.importantChannels
+        );
         if (settings.autoManage) {
           await reconcileManagedTabs(settings);
+        }
+        if (removedChannels.length > 0) {
+          await clearRuntimeStateForChannels(removedChannels, writeRuntimeState);
         }
         await updateBadge(settings);
         return { settings };
       }
       case "settings:update": {
+        const previousSettings = await readSettingsCached();
         const settings = await writeSettings(message.settings || {});
+        const removedChannels = getRemovedChannels(
+          previousSettings.importantChannels,
+          settings.importantChannels
+        );
         await syncAlarm(settings.autoManage);
         if (settings.autoManage) {
           await reconcileManagedTabs(settings);
+        }
+        if (removedChannels.length > 0) {
+          await clearRuntimeStateForChannels(removedChannels, writeRuntimeState);
         }
         await updateBadge(settings);
         return { settings };
@@ -64,21 +80,12 @@ export function createMessageRouter({
         const closedTabs = await closeManagedWatchTabs(
           Object.values(runtimeState.managedTabsByChannel)
         );
-        const endedAt = Date.now();
         await writeRuntimeState({
-          broadcastSessionsByChannel: {},
-          lastBroadcastStatsByChannel: mergeEndedBroadcastStats(
-            runtimeState.lastBroadcastStatsByChannel,
-            runtimeState.broadcastSessionsByChannel,
-            endedAt
-          ),
           managedTabsByChannel: {},
           detachedUntilByChannel: {},
           watchSessionsByChannel: {},
-          claimStatsByChannel: {},
           claimAvailabilityByChannel: {},
-          playbackStateByChannel: {},
-          watchStreakByChannel: {}
+          playbackStateByChannel: {}
         });
         const settings = await writeSettings({ autoManage: false });
         await syncAlarm(false);
@@ -232,55 +239,54 @@ export function createMessageRouter({
   };
 }
 
-function mergeEndedBroadcastStats(currentLastBroadcastStatsByChannel, broadcastSessionsByChannel, endedAt) {
-  const nextLastBroadcastStatsByChannel = {
-    ...(currentLastBroadcastStatsByChannel && typeof currentLastBroadcastStatsByChannel === "object"
-      ? currentLastBroadcastStatsByChannel
-      : {})
-  };
+function getRemovedChannels(previousChannels, nextChannels) {
+  const previousNames = new Set(
+    (Array.isArray(previousChannels) ? previousChannels : [])
+      .map((entry) => String(entry?.name || "").toLowerCase())
+      .filter(Boolean)
+  );
+  const nextNames = new Set(
+    (Array.isArray(nextChannels) ? nextChannels : [])
+      .map((entry) => String(entry?.name || "").toLowerCase())
+      .filter(Boolean)
+  );
 
-  for (const [channel, session] of Object.entries(broadcastSessionsByChannel || {})) {
-    const estimatedStartedAt = Math.round(Number(session?.estimatedStartedAt));
-    if (!channel || !Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
-      continue;
-    }
-
-    const existing = nextLastBroadcastStatsByChannel[channel];
-    nextLastBroadcastStatsByChannel[channel] = {
-      estimatedStartedAt,
-      lastSeenAt: Math.max(0, Math.round(Number(session?.lastSeenAt) || 0)),
-      lastUptimeSeconds: Math.max(0, Math.round(Number(session?.lastUptimeSeconds) || 0)),
-      endedAt: Math.max(0, Math.round(Number(endedAt) || 0)),
-      claimCount: Math.max(0, Math.floor(Number(session?.claimCount) || 0)),
-      lastClaimAt: Math.max(0, Math.round(Number(session?.lastClaimAt) || 0)),
-      streakValue: normalizeStreakValue(session?.streakValue),
-      streakSeenAt: Math.max(0, Math.round(Number(session?.streakSeenAt) || 0)),
-      baselineStreakValue: normalizeStreakValue(session?.baselineStreakValue),
-      baselineStreakSeenAt: Math.max(
-        0,
-        Math.round(Number(session?.baselineStreakSeenAt) || 0)
-      ),
-      streakIncreasedForStream: Boolean(
-        session?.streakIncreasedForStream || existing?.streakIncreasedForStream
-      ),
-      streakUnexpectedJumpForStream: Boolean(
-        session?.streakUnexpectedJumpForStream || existing?.streakUnexpectedJumpForStream
-      )
-    };
-  }
-
-  return nextLastBroadcastStatsByChannel;
+  return [...previousNames].filter((channel) => !nextNames.has(channel));
 }
 
-function normalizeStreakValue(value) {
-  if (value === null || value === undefined) {
-    return null;
+async function clearRuntimeStateForChannels(channels, writeRuntimeState) {
+  if (!Array.isArray(channels) || channels.length === 0) {
+    return;
   }
 
-  const normalized = Math.floor(Number(value));
-  if (!Number.isInteger(normalized) || normalized < 0) {
-    return null;
+  const currentState = await readRuntimeStateCached();
+  const nextState = {
+    managedTabsByChannel: { ...currentState.managedTabsByChannel },
+    detachedUntilByChannel: { ...currentState.detachedUntilByChannel },
+    liveStatusByChannel: { ...currentState.liveStatusByChannel },
+    watchSessionsByChannel: { ...currentState.watchSessionsByChannel },
+    broadcastSessionsByChannel: { ...currentState.broadcastSessionsByChannel },
+    lastBroadcastStatsByChannel: { ...currentState.lastBroadcastStatsByChannel },
+    claimStatsByChannel: { ...currentState.claimStatsByChannel },
+    claimAvailabilityByChannel: { ...currentState.claimAvailabilityByChannel },
+    playbackStateByChannel: { ...currentState.playbackStateByChannel },
+    watchStreakByChannel: { ...currentState.watchStreakByChannel },
+    lastKnownWatchStreakByChannel: { ...currentState.lastKnownWatchStreakByChannel }
+  };
+
+  for (const channel of channels) {
+    delete nextState.managedTabsByChannel[channel];
+    delete nextState.detachedUntilByChannel[channel];
+    delete nextState.liveStatusByChannel[channel];
+    delete nextState.watchSessionsByChannel[channel];
+    delete nextState.broadcastSessionsByChannel[channel];
+    delete nextState.lastBroadcastStatsByChannel[channel];
+    delete nextState.claimStatsByChannel[channel];
+    delete nextState.claimAvailabilityByChannel[channel];
+    delete nextState.playbackStateByChannel[channel];
+    delete nextState.watchStreakByChannel[channel];
+    delete nextState.lastKnownWatchStreakByChannel[channel];
   }
 
-  return normalized;
+  await writeRuntimeState(nextState);
 }
