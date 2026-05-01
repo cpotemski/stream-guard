@@ -8,6 +8,7 @@ export function createMessageRouter({
   toggleImportantChannel,
   logWorkerEvent,
   closeManagedWatchTabs,
+  reconcileWatchGroup,
   writeRuntimeState,
   handleWatchUptime,
   canManageWatchTab,
@@ -86,6 +87,9 @@ export function createMessageRouter({
           watchSessionsByChannel: {},
           claimAvailabilityByChannel: {},
           playbackStateByChannel: {}
+        });
+        await reconcileWatchGroup({
+          managedTabIds: []
         });
         const settings = await writeSettings({ autoManage: false });
         await syncAlarm(false);

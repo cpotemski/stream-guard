@@ -8,16 +8,21 @@ export function createOrchestratorService({
   writeSettings,
   readRuntimeStateFresh,
   writeRuntimeState,
+  readRuntimeStateCached,
   rebindManagedTabsAfterUpdate,
   readSettingsCached,
   reconcileManagedTabs,
   recoverManagedTabsAfterWake,
-  logWorkerEvent
+  logWorkerEvent,
+  reconcileWatchGroup
 }) {
   async function onInstalled(details) {
     const settings = await readSettingsFresh();
     await writeSettings(settings);
     const runtimeState = await writeRuntimeState(await readRuntimeStateFresh());
+    await reconcileWatchGroup({
+      managedTabIds: Object.values(runtimeState.managedTabsByChannel)
+    });
     if (details?.reason === "update") {
       await rebindManagedTabsAfterUpdate(runtimeState.managedTabsByChannel);
     }
@@ -27,6 +32,10 @@ export function createOrchestratorService({
 
   async function onStartup() {
     const settings = await readSettingsCached();
+    const runtimeState = await readRuntimeStateCached();
+    await reconcileWatchGroup({
+      managedTabIds: Object.values(runtimeState.managedTabsByChannel)
+    });
     await syncAlarm(settings.autoManage);
     await updateBadge(settings);
   }

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -16,6 +15,7 @@ const popupWaitTimeoutMs = 20_000;
 const managedTabTimeoutMs = 45_000;
 const streakTimeoutMs = 90_000;
 const scope = process.env.TEST_SCOPE || "all";
+const requiresTwitchProfile = !["popup", "group"].includes(scope);
 const testProfileDir = path.join(
   repoRoot,
   ".local",
@@ -31,42 +31,40 @@ const preferredBrowserPaths = [
 
 const browserExecutablePath =
   preferredBrowserPaths.find((candidate) => fs.existsSync(candidate)) || null;
+const installedExtensionId = readInstalledExtensionIdFromProfile(testProfileDir);
 
-if (!browserExecutablePath) {
+if (requiresTwitchProfile && !browserExecutablePath) {
   throw new Error(
     "No supported browser executable found. Install Google Chrome or Brave, or set STREAM_GUARD_BROWSER_PATH."
   );
 }
 
-if (!fs.existsSync(baseProfileDir)) {
+if (requiresTwitchProfile && !fs.existsSync(baseProfileDir)) {
   throw new Error(
     `Missing base browser profile at ${baseProfileDir}. Run npm run browser:session first and log into Twitch in that profile.`
   );
 }
 
 prepareTestProfile();
-const remoteDebuggingPort = 9222 + Math.floor(Math.random() * 1000);
-const browserProcess = spawn(browserExecutablePath, [
-  `--user-data-dir=${testProfileDir}`,
-  `--remote-debugging-port=${remoteDebuggingPort}`,
-  "--no-first-run",
-  "--no-default-browser-check"
-], {
-  stdio: "ignore"
-});
-
-let browser = null;
 let context = null;
 
 try {
-  await waitForDevTools(remoteDebuggingPort);
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${remoteDebuggingPort}`);
-  [context] = browser.contexts();
-  assert.ok(context, "Could not attach to the Chrome browser context.");
+  context = await chromium.launchPersistentContext(testProfileDir, {
+    ...(requiresTwitchProfile && browserExecutablePath ? { executablePath: browserExecutablePath } : {}),
+    headless: false,
+    args: [
+      `--disable-extensions-except=${extensionPath}`,
+      `--load-extension=${extensionPath}`,
+      "--no-first-run",
+      "--no-default-browser-check"
+    ]
+  });
+  assert.ok(context, "Could not launch the Chrome browser context.");
 
-  const extensionWorker = await getExtensionWorker(context);
-  const extensionRuntime = await readExtensionRuntime(extensionWorker);
-  const popupPage = await openPopupPage(context, extensionWorker, extensionRuntime.extensionId);
+  const extensionId = await waitForInstalledExtensionId();
+  const popupPage = await openPopupPage(context, extensionId);
+  const extensionWorker = await getExtensionWorker(context, extensionId);
+  const extensionRuntime = await readExtensionRuntimeFromPage(popupPage, extensionId);
 
   await resetExtensionState(extensionWorker);
   await waitForPopupReady(popupPage);
@@ -77,6 +75,11 @@ try {
   if (scope === "all" || scope === "popup") {
     await verifyPopupToggle(popupPage);
     console.log("PASS popup");
+  }
+
+  if (scope === "all" || scope === "group") {
+    await verifyWatchGroupFlow(popupPage);
+    console.log("PASS group");
   }
 
   let channelPage = null;
@@ -106,8 +109,7 @@ try {
 
   console.log(`Smoke scope "${scope}" passed.`);
 } finally {
-  await browser?.close();
-  browserProcess.kill("SIGTERM");
+  await context?.close();
   try {
     fs.rmSync(testProfileDir, { recursive: true, force: true });
   } catch (_error) {
@@ -117,7 +119,11 @@ try {
 
 function prepareTestProfile() {
   fs.rmSync(testProfileDir, { recursive: true, force: true });
-  fs.cpSync(baseProfileDir, testProfileDir, { recursive: true });
+  fs.mkdirSync(testProfileDir, { recursive: true });
+
+  if (fs.existsSync(baseProfileDir)) {
+    fs.cpSync(baseProfileDir, testProfileDir, { recursive: true });
+  }
 
   const transientFiles = [
     "SingletonCookie",
@@ -129,23 +135,6 @@ function prepareTestProfile() {
   for (const name of transientFiles) {
     fs.rmSync(path.join(testProfileDir, name), { force: true });
   }
-}
-
-async function waitForDevTools(port) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/version`);
-      if (response.ok) {
-        return;
-      }
-    } catch (_error) {
-      // Browser not ready yet.
-    }
-    await wait(250);
-  }
-
-  throw new Error(`Timed out waiting for Chrome DevTools endpoint on port ${port}.`);
 }
 
 function readInstalledExtensionIdFromProfile(profileDir) {
@@ -171,55 +160,66 @@ function readInstalledExtensionIdFromProfile(profileDir) {
   return null;
 }
 
-async function getExtensionWorker(context) {
-  const existingWorker = context.serviceWorkers().find((worker) => worker.url().startsWith("chrome-extension://"));
-  if (existingWorker) {
-    return existingWorker;
-  }
-
-  return context.waitForEvent("serviceworker", {
-    timeout: 20_000,
-    predicate: (candidate) => candidate.url().startsWith("chrome-extension://")
-  });
+async function getExtensionWorker(context, expectedExtensionId = null) {
+  const expectedPrefix = expectedExtensionId
+    ? `chrome-extension://${expectedExtensionId}/`
+    : "chrome-extension://";
+  return expectEventually(async () => {
+    const workers = context.serviceWorkers().filter((worker) => worker.url().startsWith(expectedPrefix));
+    for (const worker of workers) {
+      if (await isExpectedExtensionWorker(worker)) {
+        return worker;
+      }
+    }
+    return null;
+  }, 20_000, 250, "Timed out waiting for the Stream Guard extension service worker.");
 }
 
-async function readExtensionRuntime(extensionWorker) {
-  const fromWorker = await extensionWorker.evaluate(() => ({
+async function readExtensionRuntimeFromPage(popupPage, extensionId) {
+  const fromPage = await popupPage.evaluate(() => ({
     extensionId: chrome.runtime.id,
     version: chrome.runtime.getManifest().version,
     name: chrome.runtime.getManifest().name
   }));
 
-  const fallbackExtensionId = readInstalledExtensionIdFromProfile(testProfileDir);
-  if (!fromWorker.extensionId && !fallbackExtensionId) {
+  const fallbackExtensionId = extensionId || installedExtensionId;
+  if (!fromPage.extensionId && !fallbackExtensionId) {
     throw new Error("Could not determine extension runtime metadata.");
   }
 
   return {
-    extensionId: fromWorker.extensionId || fallbackExtensionId,
-    version: fromWorker.version,
-    name: fromWorker.name
+    extensionId: fromPage.extensionId || fallbackExtensionId,
+    version: fromPage.version,
+    name: fromPage.name
   };
 }
 
-async function openPopupPage(context, extensionWorker, extensionId) {
+async function isExpectedExtensionWorker(worker) {
+  try {
+    const runtime = await worker.evaluate(() => ({
+      name: chrome.runtime.getManifest().name,
+      version: chrome.runtime.getManifest().version
+    }));
+    return runtime?.name === manifest.name;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function openPopupPage(context, extensionId) {
   const popupUrl = `chrome-extension://${extensionId}/src/popup.html`;
-  const popupPagePromise = context.waitForEvent("page", {
-    timeout: 20_000,
-    predicate: (candidate) => candidate.url().startsWith(popupUrl)
+  const popupPage = await context.newPage();
+  await popupPage.goto(popupUrl, {
+    waitUntil: "domcontentloaded"
   });
-
-  await extensionWorker.evaluate(() => {
-    const url = chrome.runtime.getURL("src/popup.html");
-    return chrome.tabs.create({
-      url,
-      active: true
-    });
-  });
-
-  const popupPage = await popupPagePromise;
   await popupPage.waitForLoadState("domcontentloaded");
   return popupPage;
+}
+
+async function waitForInstalledExtensionId() {
+  return expectEventually(() => {
+    return readInstalledExtensionIdFromProfile(testProfileDir);
+  }, 20_000, 250, "Timed out waiting for the Stream Guard extension id to appear in the test profile.");
 }
 
 async function openChannelPage(context) {
@@ -284,6 +284,229 @@ async function verifyPopupToggle(popupPage) {
   await setWatchToggle(popupPage, false);
 }
 
+async function verifyWatchGroupFlow(popupPage) {
+  await clearWatchGroupTestState(popupPage);
+
+  const duplicateGroupResult = await popupPage.evaluate(async (channel) => {
+    const tabManager = await import(chrome.runtime.getURL("src/lib/tabManager.js"));
+    const primaryWindow = await chrome.windows.create({
+      url: "about:blank",
+      focused: false
+    });
+    const secondaryWindow = await chrome.windows.create({
+      url: "about:blank",
+      focused: false
+    });
+
+    const managedTab = await chrome.tabs.create({
+      windowId: primaryWindow.id,
+      url: `https://www.twitch.tv/${channel}`,
+      active: false
+    });
+    const staleRaidTab = await chrome.tabs.create({
+      windowId: primaryWindow.id,
+      url: "https://www.twitch.tv/directory/game/raid",
+      active: false
+    });
+    const strayTab = await chrome.tabs.create({
+      windowId: secondaryWindow.id,
+      url: "https://example.com/",
+      active: false
+    });
+
+    const firstGroupId = await chrome.tabs.group({
+      tabIds: [managedTab.id, staleRaidTab.id]
+    });
+    await chrome.tabGroups.update(firstGroupId, {
+      title: "Stream Guard",
+      color: "purple",
+      collapsed: true
+    });
+
+    const secondGroupId = await chrome.tabs.group({
+      tabIds: [strayTab.id]
+    });
+    await chrome.tabGroups.update(secondGroupId, {
+      title: "Stream Guard",
+      color: "purple",
+      collapsed: true
+    });
+
+    await tabManager.reconcileWatchGroup({
+      managedTabIds: [managedTab.id]
+    });
+
+    const groups = await chrome.tabGroups.query({
+      title: "Stream Guard"
+    });
+    const tabs = await chrome.tabs.query({});
+    const groupedTabs = tabs.filter((tab) => groups.some((group) => group.id === tab.groupId));
+
+    return {
+      managedTabId: managedTab.id,
+      staleRaidTabClosed: !tabs.some((tab) => tab.id === staleRaidTab.id),
+      strayTabClosed: !tabs.some((tab) => tab.id === strayTab.id),
+      groupCount: groups.length,
+      groupedTabs: groupedTabs.map((tab) => ({
+        id: tab.id,
+        groupId: tab.groupId,
+        url: tab.url,
+        windowId: tab.windowId
+      }))
+    };
+  }, targetChannel);
+
+  assert.equal(
+    duplicateGroupResult.groupCount,
+    1,
+    `Expected a single Stream Guard group after duplicate cleanup, got ${duplicateGroupResult.groupCount}.`
+  );
+  assert.equal(
+    duplicateGroupResult.staleRaidTabClosed,
+    true,
+    "Expected stale raid tab inside the Stream Guard group to be closed."
+  );
+  assert.equal(
+    duplicateGroupResult.strayTabClosed,
+    true,
+    "Expected non-managed tab from the duplicate Stream Guard group to be closed."
+  );
+  assert.equal(
+    duplicateGroupResult.groupedTabs.length,
+    2,
+    `Expected managed Twitch tab plus one about:blank keeper after cleanup, got ${duplicateGroupResult.groupedTabs.length} tabs.`
+  );
+  assert.equal(
+    duplicateGroupResult.groupedTabs.filter((tab) => tab.url === "about:blank").length,
+    1,
+    "Expected exactly one about:blank keeper tab after duplicate cleanup."
+  );
+  assert.equal(
+    duplicateGroupResult.groupedTabs.some((tab) => tab.id === duplicateGroupResult.managedTabId),
+    true,
+    "Expected the managed Twitch tab to stay inside the Stream Guard group."
+  );
+
+  await popupPage.evaluate(async (managedTabId) => {
+    const tabManager = await import(chrome.runtime.getURL("src/lib/tabManager.js"));
+    await tabManager.closeManagedWatchTabs([managedTabId]);
+    await tabManager.reconcileWatchGroup({
+      managedTabIds: []
+    });
+  }, duplicateGroupResult.managedTabId);
+
+  const blankOnlyResult = await readWatchGroupSnapshot(popupPage);
+  assert.equal(
+    blankOnlyResult.groups.length,
+    1,
+    `Expected one Stream Guard group after removing all managed tabs, got ${blankOnlyResult.groups.length}.`
+  );
+  assert.equal(
+    blankOnlyResult.groupedTabs.length,
+    1,
+    `Expected only the about:blank keeper to remain after removing managed tabs, got ${blankOnlyResult.groupedTabs.length} tabs.`
+  );
+  assert.equal(
+    blankOnlyResult.groupedTabs[0]?.url,
+    "about:blank",
+    `Expected the remaining tab to be about:blank, got ${blankOnlyResult.groupedTabs[0]?.url || "none"}.`
+  );
+
+  await clearWatchGroupTestState(popupPage);
+
+  const reuseResult = await popupPage.evaluate(async (channel) => {
+    const tabManager = await import(chrome.runtime.getURL("src/lib/tabManager.js"));
+    const groupWindow = await chrome.windows.create({
+      url: "about:blank",
+      focused: false
+    });
+    const otherWindow = await chrome.windows.create({
+      url: "about:blank",
+      focused: false
+    });
+
+    const keeperSeedTab = await chrome.tabs.create({
+      windowId: groupWindow.id,
+      url: "about:blank",
+      active: false
+    });
+    const existingGroupId = await chrome.tabs.group({
+      tabIds: [keeperSeedTab.id]
+    });
+    await chrome.tabGroups.update(existingGroupId, {
+      title: "Stream Guard",
+      color: "purple",
+      collapsed: true
+    });
+
+    await chrome.tabs.create({
+      windowId: otherWindow.id,
+      url: "https://example.com/",
+      active: false
+    });
+
+    const openedTabId = await tabManager.openWatchTab(channel, {
+      managedTabIds: []
+    });
+    await tabManager.reconcileWatchGroup({
+      managedTabIds: [openedTabId]
+    });
+
+    const groups = await chrome.tabGroups.query({
+      title: "Stream Guard"
+    });
+    const tabs = await chrome.tabs.query({});
+    const groupedTabs = tabs.filter((tab) => groups.some((group) => group.id === tab.groupId));
+    const managedTab = tabs.find((tab) => tab.id === openedTabId) || null;
+
+    return {
+      existingGroupId,
+      keeperSeedTabId: keeperSeedTab.id,
+      openedTabId,
+      managedTabWindowId: managedTab?.windowId ?? null,
+      groupWindowId: groupWindow.id,
+      groupCount: groups.length,
+      groupedTabs: groupedTabs.map((tab) => ({
+        id: tab.id,
+        url: tab.url,
+        windowId: tab.windowId
+      }))
+    };
+  }, targetChannel);
+
+  assert.equal(
+    reuseResult.groupCount,
+    1,
+    `Expected exactly one Stream Guard group after reusing an existing group, got ${reuseResult.groupCount}.`
+  );
+  assert.equal(
+    reuseResult.groupedTabs.filter((tab) => tab.url === "about:blank").length,
+    1,
+    "Expected exactly one about:blank keeper after reusing the existing group."
+  );
+  assert.equal(
+    reuseResult.groupedTabs.some((tab) => tab.id === reuseResult.keeperSeedTabId),
+    true,
+    "Expected the pre-existing about:blank keeper tab to remain in the reused Stream Guard group."
+  );
+  assert.equal(
+    reuseResult.groupedTabs.some((tab) => tab.id === reuseResult.openedTabId),
+    true,
+    "Expected the newly opened managed tab to be inside the reused Stream Guard group."
+  );
+
+  await popupPage.evaluate(async (openedTabId) => {
+    const tabManager = await import(chrome.runtime.getURL("src/lib/tabManager.js"));
+    await tabManager.closeManagedWatchTabs([openedTabId]);
+    await tabManager.reconcileWatchGroup({
+      managedTabIds: []
+    });
+  }, reuseResult.openedTabId);
+
+  await clearWatchGroupTestState(popupPage);
+  await refreshPopupPage(popupPage);
+}
+
 async function seedImportantChannel(extensionWorker) {
   await extensionWorker.evaluate(async (channel) => {
     const stored = await chrome.storage.sync.get({
@@ -304,6 +527,57 @@ async function seedImportantChannel(extensionWorker) {
       importantChannels: existingChannels
     });
   }, targetChannel);
+}
+
+async function clearWatchGroupTestState(popupPage) {
+  await popupPage.evaluate(async () => {
+    const popupUrl = chrome.runtime.getURL("src/popup.html");
+    const tabs = await chrome.tabs.query({});
+    const removableTabIds = tabs
+      .filter((tab) => tab.url !== popupUrl)
+      .map((tab) => tab.id)
+      .filter((tabId) => Number.isInteger(tabId));
+
+    if (removableTabIds.length > 0) {
+      await chrome.tabs.remove(removableTabIds);
+    }
+
+    const windows = await chrome.windows.getAll({
+      populate: true,
+      windowTypes: ["normal"]
+    });
+    for (const window of windows) {
+      const tabsInWindow = Array.isArray(window.tabs) ? window.tabs : [];
+      if (tabsInWindow.length === 0) {
+        await chrome.windows.remove(window.id);
+      }
+    }
+  });
+}
+
+async function readWatchGroupSnapshot(popupPage) {
+  return popupPage.evaluate(async () => {
+    const groups = await chrome.tabGroups.query({
+      title: "Stream Guard"
+    });
+    const tabs = await chrome.tabs.query({});
+    const groupedTabs = tabs.filter((tab) => groups.some((group) => group.id === tab.groupId));
+
+    return {
+      groups: groups.map((group) => ({
+        id: group.id,
+        title: group.title,
+        color: group.color,
+        collapsed: group.collapsed
+      })),
+      groupedTabs: groupedTabs.map((tab) => ({
+        id: tab.id,
+        groupId: tab.groupId,
+        windowId: tab.windowId,
+        url: tab.url
+      }))
+    };
+  });
 }
 
 async function verifyAddRemoveFlow(popupPage, channelPage) {

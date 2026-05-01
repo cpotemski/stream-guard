@@ -5,7 +5,11 @@ import {
   setSettings,
   toggleImportantChannel
 } from "./lib/storage.js";
-import { closeManagedWatchTabs, markTabContentReady } from "./lib/tabManager.js";
+import {
+  closeManagedWatchTabs,
+  markTabContentReady,
+  reconcileWatchGroup
+} from "./lib/tabManager.js";
 import { createTabLifecycleService } from "./background/tabLifecycleService.js";
 import { createMessageRouter } from "./background/messageRouter.js";
 import { createAuthorizationService } from "./background/authorizationService.js";
@@ -82,11 +86,13 @@ const orchestratorService = createOrchestratorService({
   writeSettings: runtimeStore.writeSettings,
   readRuntimeStateFresh: runtimeStore.readRuntimeStateFresh,
   writeRuntimeState: runtimeStore.writeRuntimeState,
+  readRuntimeStateCached: runtimeStore.readRuntimeStateCached,
   rebindManagedTabsAfterUpdate: tabLifecycleService.rebindManagedTabsAfterUpdate,
   readSettingsCached: runtimeStore.readSettingsCached,
   reconcileManagedTabs: tabLifecycleService.reconcileManagedTabs,
   recoverManagedTabsAfterWake: tabLifecycleService.recoverManagedTabsAfterWake,
-  logWorkerEvent: workerLogger.logWorkerEvent
+  logWorkerEvent: workerLogger.logWorkerEvent,
+  reconcileWatchGroup
 });
 
 const handleMessage = createMessageRouter({
@@ -99,6 +105,7 @@ const handleMessage = createMessageRouter({
   toggleImportantChannel,
   logWorkerEvent: workerLogger.logWorkerEvent,
   closeManagedWatchTabs,
+  reconcileWatchGroup,
   writeRuntimeState: runtimeStore.writeRuntimeState,
   handleWatchUptime: streamSessionService.handleWatchUptime,
   canManageWatchTab: authorizationService.canManageWatchTab,

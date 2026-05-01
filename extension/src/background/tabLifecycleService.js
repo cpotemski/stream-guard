@@ -1,5 +1,5 @@
 import { selectLiveChannels } from "../lib/liveStatus.js";
-import { closeManagedWatchTabs, openWatchTab } from "../lib/tabManager.js";
+import { closeManagedWatchTabs, openWatchTab, reconcileWatchGroup } from "../lib/tabManager.js";
 
 export function createTabLifecycleService({
   readRuntimeStateCached,
@@ -205,7 +205,9 @@ export function createTabLifecycleService({
         continue;
       }
 
-      const tabId = await openWatchTab(channel);
+      const tabId = await openWatchTab(channel, {
+        managedTabIds: Object.values(nextManagedTabsByChannel)
+      });
       if (Number.isInteger(tabId)) {
         nextManagedTabsByChannel[channel] = tabId;
         nextWatchSessionsByChannel[channel] = {
@@ -307,6 +309,9 @@ export function createTabLifecycleService({
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       playbackStateByChannel: nextPlaybackStateByChannel,
       watchStreakByChannel: nextWatchStreakByChannel
+    });
+    await reconcileWatchGroup({
+      managedTabIds: Object.values(nextManagedTabsByChannel)
     });
 
     void requestPlaybackStateForManagedTabs(nextManagedTabsByChannel);
