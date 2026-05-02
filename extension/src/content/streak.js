@@ -13,6 +13,10 @@ async function reportWatchStreak(options = {}) {
     return;
   }
 
+  await reportWatchUptime({
+    ignoreStartupDelay
+  });
+
   let authorization;
 
   try {

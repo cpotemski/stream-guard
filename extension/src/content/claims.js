@@ -1,5 +1,6 @@
-async function reportWatchUptime() {
-  if (isStartupDelayActive()) {
+async function reportWatchUptime(options = {}) {
+  const ignoreStartupDelay = Boolean(options?.ignoreStartupDelay);
+  if (!ignoreStartupDelay && isStartupDelayActive()) {
     return;
   }
 
