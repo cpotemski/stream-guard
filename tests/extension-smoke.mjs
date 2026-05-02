@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const extensionPath = path.join(repoRoot, "extension");
 const baseProfileDir = path.join(repoRoot, ".local", "browser-profile");
+const sessionMetadataPath = path.join(repoRoot, ".local", "browser-session.json");
 const manifestPath = path.join(extensionPath, "manifest.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 const targetChannel = "deemonrider";
@@ -31,7 +32,9 @@ const preferredBrowserPaths = [
 
 const browserExecutablePath =
   preferredBrowserPaths.find((candidate) => fs.existsSync(candidate)) || null;
-const installedExtensionId = readInstalledExtensionIdFromProfile(testProfileDir);
+const installedExtensionId = readInstalledExtensionIdFromProfile(
+  requiresTwitchProfile ? baseProfileDir : testProfileDir
+);
 
 if (requiresTwitchProfile && !browserExecutablePath) {
   throw new Error(
@@ -47,23 +50,40 @@ if (requiresTwitchProfile && !fs.existsSync(baseProfileDir)) {
 
 prepareTestProfile();
 let context = null;
+let browser = null;
+let usingExistingSessionBrowser = false;
+let popupPage = null;
+let extensionWorker = null;
 
 try {
-  context = await chromium.launchPersistentContext(testProfileDir, {
-    ...(requiresTwitchProfile && browserExecutablePath ? { executablePath: browserExecutablePath } : {}),
-    headless: false,
-    args: [
-      `--disable-extensions-except=${extensionPath}`,
-      `--load-extension=${extensionPath}`,
-      "--no-first-run",
-      "--no-default-browser-check"
-    ]
-  });
-  assert.ok(context, "Could not launch the Chrome browser context.");
+  if (requiresTwitchProfile) {
+    const sessionMetadata = readBrowserSessionMetadata();
+    if (!sessionMetadata?.devtoolsEndpoint) {
+      throw new Error(
+        `Missing browser session metadata at ${sessionMetadataPath}. Restart npm run browser:session first.`
+      );
+    }
+
+    browser = await chromium.connectOverCDP(sessionMetadata.devtoolsEndpoint);
+    [context] = browser.contexts();
+    usingExistingSessionBrowser = true;
+    assert.ok(context, "Could not attach to the browser:session Chrome context.");
+  } else {
+    context = await chromium.launchPersistentContext(testProfileDir, {
+      headless: false,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+        "--no-first-run",
+        "--no-default-browser-check"
+      ]
+    });
+    assert.ok(context, "Could not launch the Chrome browser context.");
+  }
 
   const extensionId = await waitForInstalledExtensionId();
-  const popupPage = await openPopupPage(context, extensionId);
-  const extensionWorker = await getExtensionWorker(context, extensionId);
+  popupPage = await openPopupPage(context, extensionId);
+  extensionWorker = await getExtensionWorker(context, extensionId);
   const extensionRuntime = await readExtensionRuntimeFromPage(popupPage, extensionId);
 
   await resetExtensionState(extensionWorker);
@@ -109,15 +129,29 @@ try {
 
   console.log(`Smoke scope "${scope}" passed.`);
 } finally {
-  await context?.close();
   try {
-    fs.rmSync(testProfileDir, { recursive: true, force: true });
+    await popupPage?.close();
   } catch (_error) {
-    // Chrome may still release profile files asynchronously; a leftover temp profile is acceptable.
+    // Best-effort cleanup only.
+  }
+
+  if (usingExistingSessionBrowser) {
+    await browser?.close();
+  } else {
+    await context?.close();
+    try {
+      fs.rmSync(testProfileDir, { recursive: true, force: true });
+    } catch (_error) {
+      // Chrome may still release profile files asynchronously; a leftover temp profile is acceptable.
+    }
   }
 }
 
 function prepareTestProfile() {
+  if (requiresTwitchProfile) {
+    return;
+  }
+
   fs.rmSync(testProfileDir, { recursive: true, force: true });
   fs.mkdirSync(testProfileDir, { recursive: true });
 
@@ -218,8 +252,22 @@ async function openPopupPage(context, extensionId) {
 
 async function waitForInstalledExtensionId() {
   return expectEventually(() => {
-    return readInstalledExtensionIdFromProfile(testProfileDir);
+    return readInstalledExtensionIdFromProfile(
+      requiresTwitchProfile ? baseProfileDir : testProfileDir
+    );
   }, 20_000, 250, "Timed out waiting for the Stream Guard extension id to appear in the test profile.");
+}
+
+function readBrowserSessionMetadata() {
+  if (!fs.existsSync(sessionMetadataPath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(sessionMetadataPath, "utf8"));
+  } catch (_error) {
+    return null;
+  }
 }
 
 async function openChannelPage(context) {
@@ -320,7 +368,7 @@ async function verifyWatchGroupFlow(popupPage) {
     await chrome.tabGroups.update(firstGroupId, {
       title: "Stream Guard",
       color: "purple",
-      collapsed: true
+      collapsed: false
     });
 
     const secondGroupId = await chrome.tabs.group({
@@ -329,7 +377,7 @@ async function verifyWatchGroupFlow(popupPage) {
     await chrome.tabGroups.update(secondGroupId, {
       title: "Stream Guard",
       color: "purple",
-      collapsed: true
+      collapsed: false
     });
 
     await tabManager.reconcileWatchGroup({
@@ -380,6 +428,12 @@ async function verifyWatchGroupFlow(popupPage) {
     duplicateGroupResult.groupedTabs.filter((tab) => tab.url === "about:blank").length,
     1,
     "Expected exactly one about:blank keeper tab after duplicate cleanup."
+  );
+  const duplicateGroupSnapshot = await readWatchGroupSnapshot(popupPage);
+  assert.equal(
+    duplicateGroupSnapshot.groups[0]?.collapsed,
+    false,
+    "Expected the Stream Guard group to remain expanded after cleanup."
   );
   assert.equal(
     duplicateGroupResult.groupedTabs.some((tab) => tab.id === duplicateGroupResult.managedTabId),
@@ -436,7 +490,7 @@ async function verifyWatchGroupFlow(popupPage) {
     await chrome.tabGroups.update(existingGroupId, {
       title: "Stream Guard",
       color: "purple",
-      collapsed: true
+      collapsed: false
     });
 
     await chrome.tabs.create({
@@ -480,19 +534,27 @@ async function verifyWatchGroupFlow(popupPage) {
     `Expected exactly one Stream Guard group after reusing an existing group, got ${reuseResult.groupCount}.`
   );
   assert.equal(
-    reuseResult.groupedTabs.filter((tab) => tab.url === "about:blank").length,
-    1,
-    "Expected exactly one about:blank keeper after reusing the existing group."
-  );
-  assert.equal(
-    reuseResult.groupedTabs.some((tab) => tab.id === reuseResult.keeperSeedTabId),
-    true,
-    "Expected the pre-existing about:blank keeper tab to remain in the reused Stream Guard group."
-  );
-  assert.equal(
     reuseResult.groupedTabs.some((tab) => tab.id === reuseResult.openedTabId),
     true,
     "Expected the newly opened managed tab to be inside the reused Stream Guard group."
+  );
+  const blankKeeperCount = reuseResult.groupedTabs.filter((tab) => tab.url === "about:blank").length;
+  assert.ok(
+    blankKeeperCount === 1 || reuseResult.keeperSeedTabId === reuseResult.openedTabId,
+    "Expected the existing about:blank keeper to either remain as a keeper or be reused as the managed tab."
+  );
+  if (blankKeeperCount === 1) {
+    assert.equal(
+      reuseResult.groupedTabs.some((tab) => tab.id === reuseResult.keeperSeedTabId),
+      true,
+      "Expected the pre-existing about:blank keeper tab to remain in the reused Stream Guard group."
+    );
+  }
+  const reuseSnapshot = await readWatchGroupSnapshot(popupPage);
+  assert.equal(
+    reuseSnapshot.groups[0]?.collapsed,
+    false,
+    "Expected the reused Stream Guard group to remain expanded."
   );
 
   await popupPage.evaluate(async (openedTabId) => {
@@ -664,7 +726,7 @@ async function verifyWatchStreakFlow(context, popupPage) {
 async function verifyPlaybackFlow(context, popupPage) {
   await setWatchToggle(popupPage, true);
 
-  const managedTabId = await waitForManagedTabId(popupPage);
+  const managedTabId = await ensureManagedChannelTab(popupPage);
   const managedPage = await waitForManagedChannelPage(context);
   await managedPage.bringToFront();
 

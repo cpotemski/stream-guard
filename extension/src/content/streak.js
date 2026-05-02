@@ -1,5 +1,6 @@
-async function reportWatchStreak() {
-  if (isStartupDelayActive()) {
+async function reportWatchStreak(options = {}) {
+  const ignoreStartupDelay = Boolean(options?.ignoreStartupDelay);
+  if (!ignoreStartupDelay && isStartupDelayActive()) {
     return;
   }
 
@@ -27,6 +28,10 @@ async function reportWatchStreak() {
   if (!authorization?.ok || !authorization.authorized) {
     return;
   }
+
+  await sendPrimeSignal("prime:streak-attempted", {
+    channel
+  });
 
   const summaryData = await waitForResult(
     () => {

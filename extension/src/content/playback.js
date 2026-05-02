@@ -42,9 +42,10 @@ function schedulePlaybackStateReport() {
   }, PLAYBACK_REPORT_DEBOUNCE_MS);
 }
 
-async function ensureManagedPlaybackState() {
+async function ensureManagedPlaybackState(options = {}) {
   touchLifecycleHeartbeat();
-  if (isStartupDelayActive()) {
+  const ignoreStartupDelay = Boolean(options?.ignoreStartupDelay);
+  if (!ignoreStartupDelay && isStartupDelayActive()) {
     return;
   }
 
@@ -66,6 +67,11 @@ async function ensureManagedPlaybackState() {
 
   if (!response?.ok || !response.authorized) {
     return;
+  }
+
+  const acceptedAudienceGate = await acceptAudienceGateIfPresent(channel);
+  if (acceptedAudienceGate) {
+    await wait(400);
   }
 
   const playerContext = resolvePlaybackPlayerContext();
@@ -93,6 +99,12 @@ async function ensureManagedPlaybackState() {
       });
       await sendPlaybackCorrected(channel);
     }
+  }
+
+  if (!video.muted) {
+    await sendPrimeSignal("prime:playback-ready", {
+      channel
+    });
   }
 
   await reportManagedPlaybackStateForVideo(channel, video);
@@ -264,6 +276,107 @@ function findPlaybackAlert(playerRoot) {
 
   const alert = document.querySelector("[role='alert']");
   return alert instanceof HTMLElement ? alert : null;
+}
+
+async function acceptAudienceGateIfPresent(channel) {
+  const acceptButton = findAudienceGateAcceptButton();
+  if (!(acceptButton instanceof HTMLButtonElement)) {
+    return false;
+  }
+
+  acceptButton.click();
+  sendTabTelemetry("consent:accepted", {
+    channel
+  });
+  return true;
+}
+
+function findAudienceGateAcceptButton() {
+  const settingsLink = findAudienceGateSettingsLink();
+  if (!(settingsLink instanceof HTMLAnchorElement)) {
+    return null;
+  }
+
+  const container = findAudienceGateContainer(settingsLink);
+  if (!(container instanceof HTMLElement)) {
+    return null;
+  }
+
+  const buttons = [...container.querySelectorAll("button")]
+    .filter((button) => button instanceof HTMLButtonElement)
+    .filter((button) => isVisibleInteractiveElement(button))
+    .filter((button) => button.getBoundingClientRect().width >= 100)
+    .filter((button) => button.getBoundingClientRect().height >= 36)
+    .sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      if (Math.abs(leftRect.y - rightRect.y) > 8) {
+        return leftRect.y - rightRect.y;
+      }
+      return leftRect.x - rightRect.x;
+    });
+
+  if (buttons.length < 2) {
+    return null;
+  }
+
+  return buttons[0];
+}
+
+function findAudienceGateSettingsLink() {
+  const links = [...document.querySelectorAll("a[href]")];
+  return links.find((link) => {
+    if (!(link instanceof HTMLAnchorElement) || !isVisibleInteractiveElement(link)) {
+      return false;
+    }
+
+    return /\/settings\/content-preferences(?:[/?#]|$)/i.test(link.href);
+  }) || null;
+}
+
+function findAudienceGateContainer(anchor) {
+  if (!(anchor instanceof HTMLElement)) {
+    return null;
+  }
+
+  let current = anchor;
+  while (current instanceof HTMLElement && current !== document.body) {
+    const visibleButtons = [...current.querySelectorAll("button")]
+      .filter((button) => button instanceof HTMLButtonElement)
+      .filter((button) => isVisibleInteractiveElement(button))
+      .filter((button) => button.getBoundingClientRect().width >= 100)
+      .filter((button) => button.getBoundingClientRect().height >= 36);
+    const textLength = String(current.textContent || "").trim().length;
+
+    if (
+      visibleButtons.length >= 2
+      && textLength >= 80
+      && textLength <= 1200
+      && !current.querySelector("[data-a-target='video-player']")
+      && !current.closest("nav")
+      && !current.closest("aside")
+    ) {
+      return current;
+    }
+
+    current = current.parentElement;
+  }
+
+  return null;
+}
+
+function isVisibleInteractiveElement(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 function needsPlaybackResume(video) {

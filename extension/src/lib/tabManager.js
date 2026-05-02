@@ -1,12 +1,6 @@
 const WATCH_GROUP_TITLE = "Stream Guard";
 const WATCH_GROUP_COLOR = "purple";
 const ABOUT_BLANK_URL = "about:blank";
-const TAB_PRIME_READY_TIMEOUT_MS = 8000;
-let tabPrimeInFlight = null;
-const pendingPrimeTabIds = [];
-const pendingPrimeSet = new Set();
-const readyPrimedTabIds = new Set();
-const readyWaitersByTabId = new Map();
 
 export async function openWatchTab(channel, options = {}) {
   const targetChannel = String(channel || "").toLowerCase();
@@ -16,9 +10,13 @@ export async function openWatchTab(channel, options = {}) {
 
   const groupContext = await getCanonicalGroupContext();
   const managedTabIds = normalizeTabIds(options.managedTabIds);
-  const tab = await chrome.tabs.create({
+  const groupState = await getWatchGroupState();
+  const reusableKeeper = managedTabIds.length === 0
+    ? groupState.groupedTabs.find((tab) => tab.url === ABOUT_BLANK_URL)
+    : null;
+  const tab = reusableKeeper || await chrome.tabs.create({
     ...(Number.isInteger(groupContext.windowId) ? { windowId: groupContext.windowId } : {}),
-    url: `https://www.twitch.tv/${targetChannel}`,
+    url: ABOUT_BLANK_URL,
     active: false
   });
 
@@ -32,10 +30,27 @@ export async function openWatchTab(channel, options = {}) {
     // If muting fails transiently, keep tab management running.
   }
 
-  await reconcileWatchGroup({
-    managedTabIds: [...managedTabIds, tab.id]
-  });
-  void requestTabPrime(tab.id);
+  if (!reusableKeeper) {
+    await reconcileWatchGroup({
+      managedTabIds: [...managedTabIds, tab.id]
+    });
+  }
+
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+  } catch {
+    // If activation fails transiently, the caller can still reconcile or retry later.
+  }
+
+  try {
+    await chrome.tabs.update(tab.id, {
+      url: `https://www.twitch.tv/${targetChannel}`
+    });
+  } catch {
+    await closeManagedWatchTabs([tab.id]);
+    return null;
+  }
+
   return tab.id;
 }
 
@@ -53,9 +68,6 @@ export async function closeManagedWatchTabs(tabIds) {
   const removableIds = validTabIds.filter((tabId) => existingIds.has(tabId));
 
   if (removableIds.length > 0) {
-    for (const tabId of removableIds) {
-      clearPrimeReadyState(tabId);
-    }
     await chrome.tabs.remove(removableIds);
   }
 
@@ -131,37 +143,17 @@ export async function reconcileWatchGroup(options = {}) {
     .filter((tabId) => Number.isInteger(tabId) && !finalKeepTabIds.includes(tabId));
 
   if (removableTabIds.length > 0) {
-    for (const tabId of removableTabIds) {
-      clearPrimeReadyState(tabId);
-    }
     await chrome.tabs.remove(removableTabIds);
   }
 
   await chrome.tabGroups.update(canonicalGroupId, {
     title: WATCH_GROUP_TITLE,
     color: WATCH_GROUP_COLOR,
-    collapsed: true
+    collapsed: false
   });
 
   return canonicalGroupId;
 }
-
-export function markTabContentReady(tabId) {
-  if (!Number.isInteger(tabId)) {
-    return;
-  }
-
-  readyPrimedTabIds.add(tabId);
-
-  const waiter = readyWaitersByTabId.get(tabId);
-  if (!waiter) {
-    return;
-  }
-
-  readyWaitersByTabId.delete(tabId);
-  waiter.resolve(true);
-}
-
 async function getWatchGroupState(existingTabs = null) {
   const tabs = Array.isArray(existingTabs) ? existingTabs : await chrome.tabs.query({});
   const groups = await chrome.tabGroups.query({ title: WATCH_GROUP_TITLE });
@@ -285,96 +277,6 @@ async function getFallbackWindowId() {
   });
   const windowId = windows.find((entry) => Number.isInteger(entry?.id))?.id;
   return Number.isInteger(windowId) ? windowId : null;
-}
-
-function requestTabPrime(createdTabId) {
-  if (!Number.isInteger(createdTabId) || pendingPrimeSet.has(createdTabId)) {
-    return;
-  }
-
-  pendingPrimeTabIds.push(createdTabId);
-  pendingPrimeSet.add(createdTabId);
-
-  if (tabPrimeInFlight) {
-    return;
-  }
-
-  tabPrimeInFlight = runPrimeQueue().finally(() => {
-    tabPrimeInFlight = null;
-  });
-}
-
-async function runPrimeQueue() {
-  while (pendingPrimeTabIds.length > 0) {
-    const nextTabId = pendingPrimeTabIds.shift();
-    pendingPrimeSet.delete(nextTabId);
-    await primeTab(nextTabId);
-  }
-}
-
-async function primeTab(createdTabId) {
-  if (!Number.isInteger(createdTabId)) {
-    return;
-  }
-
-  try {
-    await chrome.tabs.update(createdTabId, { active: true });
-  } catch {
-    return;
-  }
-
-  await waitForTabContentReady(createdTabId);
-}
-
-function waitForTabContentReady(tabId) {
-  if (!Number.isInteger(tabId)) {
-    return Promise.resolve(false);
-  }
-
-  if (readyPrimedTabIds.has(tabId)) {
-    return Promise.resolve(true);
-  }
-
-  const existingWaiter = readyWaitersByTabId.get(tabId);
-  if (existingWaiter) {
-    return existingWaiter.promise;
-  }
-
-  let resolvePromise = null;
-  const promise = new Promise((resolve) => {
-    resolvePromise = resolve;
-  });
-
-  const timeoutId = setTimeout(() => {
-    readyWaitersByTabId.delete(tabId);
-    resolvePromise(false);
-  }, TAB_PRIME_READY_TIMEOUT_MS);
-
-  readyWaitersByTabId.set(tabId, {
-    promise,
-    resolve: (value) => {
-      clearTimeout(timeoutId);
-      resolvePromise(Boolean(value));
-    }
-  });
-
-  return promise;
-}
-
-function clearPrimeReadyState(tabId) {
-  if (!Number.isInteger(tabId)) {
-    return;
-  }
-
-  readyPrimedTabIds.delete(tabId);
-
-  const waiter = readyWaitersByTabId.get(tabId);
-  if (!waiter) {
-    return;
-  }
-
-  readyWaitersByTabId.delete(tabId);
-  waiter.resolve(false);
 }
 
 function normalizeTabIds(tabIds) {

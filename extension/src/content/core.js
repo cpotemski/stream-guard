@@ -205,3 +205,19 @@ async function sendStreakProbeLog(channel, reason, details = {}) {
     // Ignore transient extension reload gaps.
   }
 }
+
+async function sendPrimeSignal(type, details = {}) {
+  const normalizedType = String(type || "").toLowerCase();
+  if (!normalizedType) {
+    return;
+  }
+
+  try {
+    await chrome.runtime.sendMessage({
+      type: normalizedType,
+      details
+    });
+  } catch (_error) {
+    // Ignore transient extension reload gaps.
+  }
+}

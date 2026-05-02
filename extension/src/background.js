@@ -7,7 +7,6 @@ import {
 } from "./lib/storage.js";
 import {
   closeManagedWatchTabs,
-  markTabContentReady,
   reconcileWatchGroup
 } from "./lib/tabManager.js";
 import { createTabLifecycleService } from "./background/tabLifecycleService.js";
@@ -16,6 +15,7 @@ import { createAuthorizationService } from "./background/authorizationService.js
 import { createStreamSessionService } from "./background/streamSessionService.js";
 import { createOrchestratorService } from "./background/orchestratorService.js";
 import { createRuntimeStore } from "./background/runtimeStore.js";
+import { createTabPrimeStateStore } from "./background/tabPrimeState.js";
 import { getExistingTab, getChannelFromTab } from "./background/tabUtils.js";
 import { createWorkerLogger } from "./background/workerLogger.js";
 import { createTelemetryStore } from "./background/telemetryStore.js";
@@ -46,13 +46,33 @@ const runtimeStore = createRuntimeStore({
   stateCacheTtlMs: STATE_CACHE_TTL_MS,
   onStateMutated: null
 });
+const pendingManagedTabsByChannel = new Map();
+const tabPrimeStateStore = createTabPrimeStateStore();
 
 const tabLifecycleService = createTabLifecycleService({
   readRuntimeStateCached: runtimeStore.readRuntimeStateCached,
+  readRuntimeStateFresh: runtimeStore.readRuntimeStateFresh,
   writeRuntimeState: runtimeStore.writeRuntimeState,
   getExistingTab,
   getChannelFromTab,
   logWorkerEvent: workerLogger.logWorkerEvent,
+  readTabPrimeState: tabPrimeStateStore.read,
+  resetTabPrimeState: tabPrimeStateStore.reset,
+  clearTabPrimeState: tabPrimeStateStore.clear,
+  markPendingManagedTab: (channel, tabId) => {
+    if (channel && Number.isInteger(tabId)) {
+      pendingManagedTabsByChannel.set(channel, tabId);
+    }
+  },
+  clearPendingManagedTab: (channel, tabId) => {
+    if (!channel) {
+      return;
+    }
+
+    if (!Number.isInteger(tabId) || pendingManagedTabsByChannel.get(channel) === tabId) {
+      pendingManagedTabsByChannel.delete(channel);
+    }
+  },
   detachedReopenCooldownMs: DETACHED_REOPEN_COOLDOWN_MS,
   startupRecoveryReloadThresholdMs: STARTUP_RECOVERY_RELOAD_THRESHOLD_MS
 });
@@ -63,7 +83,8 @@ const authorizationService = createAuthorizationService({
   getExistingTab,
   getChannelFromTab,
   watchGroupTitle: WATCH_GROUP_TITLE,
-  authCacheTtlMs: AUTH_CACHE_TTL_MS
+  authCacheTtlMs: AUTH_CACHE_TTL_MS,
+  isPendingManagedTab: (channel, tabId) => pendingManagedTabsByChannel.get(channel) === tabId
 });
 
 runtimeStore.setOnStateMutated(() => {
@@ -113,7 +134,9 @@ const handleMessage = createMessageRouter({
   recordClaim: streamSessionService.recordClaim,
   updateClaimAvailability: streamSessionService.updateClaimAvailability,
   updateWatchStreak: streamSessionService.updateWatchStreak,
-  markTabContentReady,
+  markTabContentReady: tabPrimeStateStore.markContentReady,
+  markTabPlaybackPrimeReady: tabPrimeStateStore.markPlaybackReady,
+  markTabStreakPrimeAttempted: tabPrimeStateStore.markStreakAttempted,
   logTabTelemetryEvent: async ({ event, details, sender }) => {
     await telemetryStore.append({
       source: "tab",

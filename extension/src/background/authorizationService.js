@@ -4,7 +4,8 @@ export function createAuthorizationService({
   getExistingTab,
   getChannelFromTab,
   watchGroupTitle,
-  authCacheTtlMs
+  authCacheTtlMs,
+  isPendingManagedTab = null
 }) {
   const authorizationCache = new Map();
 
@@ -37,35 +38,36 @@ export function createAuthorizationService({
     }
 
     const runtimeState = await readRuntimeStateCached();
-    if (runtimeState.managedTabsByChannel[channel] !== tabId) {
-      cacheAuthorizationResult(authorizationKey, false);
+    const assignedTabId = runtimeState.managedTabsByChannel[channel];
+    const pendingManagedTab = typeof isPendingManagedTab === "function"
+      ? isPendingManagedTab(channel, tabId)
+      : false;
+    if (assignedTabId !== tabId && !pendingManagedTab) {
       return false;
     }
 
     const tab = await getExistingTab(tabId);
     if (!tab) {
-      cacheAuthorizationResult(authorizationKey, false);
       return false;
     }
 
     const tabChannel = getChannelFromTab(tab);
     if (tabChannel !== channel) {
-      cacheAuthorizationResult(authorizationKey, false);
       return false;
     }
 
     if (!Number.isInteger(tab.groupId) || tab.groupId < 0) {
-      cacheAuthorizationResult(authorizationKey, false);
       return false;
     }
 
     try {
       const group = await chrome.tabGroups.get(tab.groupId);
       const allowed = group?.title === watchGroupTitle;
-      cacheAuthorizationResult(authorizationKey, allowed);
+      if (allowed) {
+        cacheAuthorizationResult(authorizationKey, true);
+      }
       return allowed;
     } catch (_error) {
-      cacheAuthorizationResult(authorizationKey, false);
       return false;
     }
   }

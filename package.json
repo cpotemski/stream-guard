@@ -6,6 +6,7 @@
     "browser:session": "node scripts/project-browser-session.mjs",
     "browser:session:reset": "node scripts/project-browser-session.mjs --reset-profile",
     "browser:extensions": "STREAM_GUARD_START_URL='chrome://extensions/' node scripts/project-browser-session.mjs",
+    "test:unit": "node --test tests/*.test.mjs",
     "test:smoke": "node tests/extension-smoke.mjs",
     "test:smoke:popup": "TEST_SCOPE=popup node tests/extension-smoke.mjs",
     "test:smoke:group": "TEST_SCOPE=group node tests/extension-smoke.mjs",

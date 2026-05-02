@@ -6,9 +6,11 @@ import process from "node:process";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const extensionPath = path.join(repoRoot, "extension");
 const userDataDir = path.join(repoRoot, ".local", "browser-profile");
+const sessionMetadataPath = path.join(repoRoot, ".local", "browser-session.json");
 const startUrl = process.env.STREAM_GUARD_START_URL || "https://www.twitch.tv/";
 const shouldResetProfile = process.argv.includes("--reset-profile");
 const explicitBrowserPath = process.env.STREAM_GUARD_BROWSER_PATH;
+const remoteDebuggingPort = normalizePort(process.env.STREAM_GUARD_REMOTE_DEBUGGING_PORT, 9223);
 
 const preferredBrowserPaths = [
   explicitBrowserPath,
@@ -37,6 +39,7 @@ if (!browserExecutablePath) {
 
 const browserArgs = [
   `--user-data-dir=${userDataDir}`,
+  `--remote-debugging-port=${remoteDebuggingPort}`,
   "--no-first-run",
   "--no-default-browser-check",
   startUrl
@@ -49,10 +52,23 @@ const child = spawn(browserExecutablePath, browserArgs, {
 
 child.unref();
 
+fs.writeFileSync(
+  sessionMetadataPath,
+  JSON.stringify({
+    userDataDir,
+    startUrl,
+    browserExecutablePath,
+    remoteDebuggingPort,
+    devtoolsEndpoint: `http://127.0.0.1:${remoteDebuggingPort}`,
+    launchedAt: new Date().toISOString()
+  }, null, 2)
+);
+
 console.log(`Stream Guard project browser started.
 Profile: ${userDataDir}
 Start URL: ${startUrl}
 Browser: ${browserExecutablePath}
+DevTools: http://127.0.0.1:${remoteDebuggingPort}
 Twitch audio: site-muted at browser level
 
 The browser now runs independently from this command.
@@ -103,4 +119,13 @@ function ensureTwitchSiteMuted(profileDir) {
   };
 
   fs.writeFileSync(preferencesPath, JSON.stringify(preferences));
+}
+
+function normalizePort(value, fallbackPort) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return fallbackPort;
+  }
+
+  return parsed;
 }

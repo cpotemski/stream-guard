@@ -1,18 +1,24 @@
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "watch:request-playback-state") {
+    void reportContentReady();
     window.clearTimeout(requestedPlaybackRefresh);
     requestedPlaybackRefresh = window.setTimeout(() => {
       requestedPlaybackRefresh = 0;
-      void ensureManagedPlaybackState();
+      void ensureManagedPlaybackState({
+        ignoreStartupDelay: true
+      });
     }, 0);
     return;
   }
 
   if (message?.type === "watch:request-streak") {
+    void reportContentReady();
     window.clearTimeout(requestedStreakRefresh);
     requestedStreakRefresh = window.setTimeout(() => {
       requestedStreakRefresh = 0;
-      void reportWatchStreak();
+      void reportWatchStreak({
+        ignoreStartupDelay: true
+      });
     }, 0);
   }
 });

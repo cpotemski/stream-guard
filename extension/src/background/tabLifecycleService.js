@@ -1,15 +1,27 @@
 import { selectLiveChannels } from "../lib/liveStatus.js";
 import { closeManagedWatchTabs, openWatchTab, reconcileWatchGroup } from "../lib/tabManager.js";
+import { evaluateManagedTabPrimeBarrier } from "./tabPrimeState.js";
 
 export function createTabLifecycleService({
   readRuntimeStateCached,
+  readRuntimeStateFresh,
   writeRuntimeState,
   getExistingTab,
   getChannelFromTab,
   logWorkerEvent,
+  readTabPrimeState,
+  resetTabPrimeState,
+  clearTabPrimeState,
+  markPendingManagedTab,
+  clearPendingManagedTab,
   detachedReopenCooldownMs,
   startupRecoveryReloadThresholdMs
 }) {
+  const managedTabPrimeTimeoutMs = 30000;
+  const managedTabActivationIntervalMs = 1000;
+  const managedTabPlaybackRequestIntervalMs = 1000;
+  const managedTabStreakRequestIntervalMs = 2500;
+
   async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
     const entries = Object.entries(managedTabsByChannel || {});
     const targets = entries.filter(([, tabId]) => Number.isInteger(tabId));
@@ -209,6 +221,8 @@ export function createTabLifecycleService({
         managedTabIds: Object.values(nextManagedTabsByChannel)
       });
       if (Number.isInteger(tabId)) {
+        markPendingManagedTab(channel, tabId);
+        resetTabPrimeState(tabId);
         nextManagedTabsByChannel[channel] = tabId;
         nextWatchSessionsByChannel[channel] = {
           startedAt: Date.now()
@@ -242,6 +256,23 @@ export function createTabLifecycleService({
           tabId,
           keepBroadcastSession
         });
+        await writeRuntimeState({
+          managedTabsByChannel: nextManagedTabsByChannel,
+          detachedUntilByChannel: nextDetachedUntilByChannel,
+          watchSessionsByChannel: nextWatchSessionsByChannel,
+          broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
+          lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
+          claimStatsByChannel: nextClaimStatsByChannel,
+          claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
+          playbackStateByChannel: nextPlaybackStateByChannel,
+          watchStreakByChannel: nextWatchStreakByChannel
+        });
+        try {
+          await waitForManagedTabInitialization(channel, tabId);
+        } finally {
+          clearTabPrimeState(tabId);
+          clearPendingManagedTab(channel, tabId);
+        }
       }
     }
 
@@ -404,6 +435,99 @@ export function createTabLifecycleService({
     }
   }
 
+  async function waitForManagedTabInitialization(channel, tabId) {
+    if (!channel || !Number.isInteger(tabId)) {
+      return;
+    }
+
+    await logWorkerEvent("watch:init-wait-start", {
+      channel,
+      tabId
+    });
+    await logWorkerEvent("watch:init-start", {
+      channel,
+      tabId
+    });
+
+    const initializationStartedAt = Date.now();
+    let lastActivationAttemptAt = 0;
+    let lastPlaybackRequestAt = 0;
+    let lastStreakRequestAt = 0;
+    let contentReadyLogged = false;
+    let streakAttemptLogged = false;
+
+    while (true) {
+      const now = Date.now();
+      const elapsedMs = Math.max(0, now - initializationStartedAt);
+      const runtimeState = await readRuntimeStateFresh();
+      if (runtimeState.managedTabsByChannel?.[channel] !== tabId) {
+        await logWorkerEvent("watch:init-aborted-reassigned", {
+          channel,
+          tabId
+        });
+        return;
+      }
+
+      if (now - lastActivationAttemptAt >= managedTabActivationIntervalMs) {
+        lastActivationAttemptAt = now;
+        await ensureManagedTabActive(tabId);
+      }
+
+      const primeState = readTabPrimeState(tabId);
+      if (primeState.contentReady && !contentReadyLogged) {
+        contentReadyLogged = true;
+        await logWorkerEvent("watch:init-content-ready", {
+          channel,
+          tabId
+        });
+      }
+
+      const barrier = evaluateManagedTabPrimeBarrier({
+        elapsedMs,
+        primeState,
+        streakValue: runtimeState.watchStreakByChannel?.[channel]?.value,
+        streakTimeoutMs: managedTabPrimeTimeoutMs
+      });
+
+      if (now - lastPlaybackRequestAt >= managedTabPlaybackRequestIntervalMs) {
+        lastPlaybackRequestAt = now;
+        await requestPlaybackStateForManagedTab(channel, tabId);
+      }
+
+      if (!barrier.hasStreakValue && now - lastStreakRequestAt >= managedTabStreakRequestIntervalMs) {
+        lastStreakRequestAt = now;
+        await requestWatchStreakForManagedTab(channel, tabId);
+      }
+
+      if (primeState.streakAttempted && !streakAttemptLogged) {
+        streakAttemptLogged = true;
+        await logWorkerEvent("watch:init-streak-attempted", {
+          channel,
+          tabId
+        });
+      }
+
+      if (barrier.done) {
+        await logWorkerEvent(
+          barrier.timedOut ? "watch:init-timeout" : "watch:init-ready",
+          {
+            channel,
+            tabId,
+            elapsedMs,
+            contentReady: primeState.contentReady,
+            streakAttempted: primeState.streakAttempted,
+            hasPlaybackReady: barrier.hasPlaybackReady,
+            hasStreakValue: barrier.hasStreakValue,
+            reason: barrier.reason
+          }
+        );
+        return;
+      }
+
+      await wait(250);
+    }
+  }
+
   async function triggerStartupRecoveryReloads({
     managedTabsByChannel,
     watchSessionsByChannel,
@@ -469,6 +593,41 @@ export function createTabLifecycleService({
           tabId
         });
       }
+    }
+  }
+
+  async function requestPlaybackStateForManagedTab(channel, tabId) {
+    if (!channel || !Number.isInteger(tabId)) {
+      return;
+    }
+
+    try {
+      await chrome.tabs.sendMessage(tabId, {
+        type: "watch:request-playback-state",
+        channel
+      });
+    } catch (_error) {
+      await logWorkerEvent("watch:init-playback-request-failed", {
+        channel,
+        tabId
+      });
+    }
+  }
+
+  async function ensureManagedTabActive(tabId) {
+    if (!Number.isInteger(tabId)) {
+      return;
+    }
+
+    try {
+      const tab = await getExistingTab(tabId);
+      if (!tab || tab.active) {
+        return;
+      }
+
+      await chrome.tabs.update(tabId, { active: true });
+    } catch (_error) {
+      // Activation retries are best-effort during the prime slot.
     }
   }
 
@@ -584,4 +743,10 @@ function summarizeRuntimeState(runtimeState) {
     playbackStates: state.playbackStateByChannel || {},
     watchStreakCount: Object.keys(state.watchStreakByChannel || {}).length
   };
+}
+
+function wait(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Math.round(Number(delayMs) || 0)));
+  });
 }

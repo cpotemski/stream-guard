@@ -17,6 +17,8 @@ export function createMessageRouter({
   updateClaimAvailability,
   updateWatchStreak,
   markTabContentReady,
+  markTabPlaybackPrimeReady,
+  markTabStreakPrimeAttempted,
   logTabTelemetryEvent,
   exportTelemetrySnapshot,
   clearTelemetry,
@@ -163,6 +165,14 @@ export function createMessageRouter({
       }
       case "content:ready": {
         markTabContentReady(sender?.tab?.id);
+        return {};
+      }
+      case "prime:playback-ready": {
+        markTabPlaybackPrimeReady(sender?.tab?.id);
+        return {};
+      }
+      case "prime:streak-attempted": {
+        markTabStreakPrimeAttempted(sender?.tab?.id);
         return {};
       }
       case "claim:authorize": {
