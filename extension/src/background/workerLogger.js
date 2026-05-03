@@ -1,13 +1,22 @@
-export function createWorkerLogger(prefix, appendTelemetryEvent = null) {
+export function createWorkerLogger(
+  prefix,
+  appendTelemetryEvent = null,
+  {
+    shouldMirrorToConsole = defaultShouldMirrorToConsole,
+    shouldPersistEvent = defaultShouldPersistEvent
+  } = {}
+) {
   async function logWorkerEvent(event, details) {
     const payload = {
       timestamp: new Date().toISOString(),
       event,
       details
     };
-    console.info(prefix, payload);
+    if (shouldMirrorToConsole(event, details)) {
+      console.info(prefix, payload);
+    }
 
-    if (typeof appendTelemetryEvent === "function") {
+    if (typeof appendTelemetryEvent === "function" && shouldPersistEvent(event, details)) {
       try {
         await appendTelemetryEvent({
           source: "worker",
@@ -23,4 +32,12 @@ export function createWorkerLogger(prefix, appendTelemetryEvent = null) {
   return {
     logWorkerEvent
   };
+}
+
+function defaultShouldMirrorToConsole() {
+  return true;
+}
+
+function defaultShouldPersistEvent() {
+  return true;
 }

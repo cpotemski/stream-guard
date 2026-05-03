@@ -30,6 +30,19 @@ const DETACHED_REOPEN_COOLDOWN_MS = 300000;
 const STARTUP_RECOVERY_RELOAD_THRESHOLD_MS = 1080000;
 const WORKER_LOG_PREFIX = "[Stream Guard]";
 const TELEMETRY_MAX_EVENTS = 1000;
+const QUIET_WORKER_EVENTS = new Set([
+  "claim:available",
+  "claim:cleared",
+  "playback-state:updated",
+  "reconcile:done",
+  "reconcile:keep-loading-tab",
+  "reconcile:skip-open",
+  "reconcile:start",
+  "watch:init-content-ready",
+  "watch:init-start",
+  "watch:init-streak-attempted",
+  "watch:init-wait-start"
+]);
 
 const telemetryStore = createTelemetryStore({
   maxEvents: TELEMETRY_MAX_EVENTS
@@ -37,7 +50,14 @@ const telemetryStore = createTelemetryStore({
 void telemetryStore.compact().catch(() => {
   // Keep startup resilient if persisted telemetry cannot be compacted immediately.
 });
-const workerLogger = createWorkerLogger(WORKER_LOG_PREFIX, telemetryStore.append);
+const workerLogger = createWorkerLogger(
+  WORKER_LOG_PREFIX,
+  telemetryStore.append,
+  {
+    shouldMirrorToConsole: shouldMirrorWorkerEventToConsole,
+    shouldPersistEvent: shouldPersistWorkerEvent
+  }
+);
 const runtimeStore = createRuntimeStore({
   getSettings,
   setSettings,
@@ -191,3 +211,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+
+function shouldMirrorWorkerEventToConsole(event) {
+  const normalizedEvent = String(event || "").toLowerCase();
+  if (!normalizedEvent || QUIET_WORKER_EVENTS.has(normalizedEvent)) {
+    return false;
+  }
+
+  return normalizedEvent !== "streak:probe-log";
+}
+
+function shouldPersistWorkerEvent(event, details) {
+  const normalizedEvent = String(event || "").toLowerCase();
+  if (!normalizedEvent || QUIET_WORKER_EVENTS.has(normalizedEvent)) {
+    return false;
+  }
+
+  if (normalizedEvent !== "streak:probe-log") {
+    return true;
+  }
+
+  return isActionableStreakProbeReason(details?.reason);
+}
+
+function isActionableStreakProbeReason(reason) {
+  const normalizedReason = String(reason || "").toLowerCase();
+  if (!normalizedReason) {
+    return false;
+  }
+
+  return normalizedReason !== "streak-primary-used";
+}

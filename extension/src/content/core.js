@@ -63,7 +63,6 @@ let startupSequenceTimeoutId = 0;
 let inlineStatsRefreshInFlight = false;
 let lastInlineStatsKey = null;
 let claimBlockedUntilAt = 0;
-let lastMissingStreamIdWarningAt = 0;
 
 function getChannelFromLocation(pathname) {
   const cleanPath = String(pathname || "").replace(/^\/+|\/+$/g, "");

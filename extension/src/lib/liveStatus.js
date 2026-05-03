@@ -1,9 +1,11 @@
 const TWITCH_GQL_ENDPOINT = "https://gql.twitch.tv/gql";
 const TWITCH_PUBLIC_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const LIVE_STATUS_CACHE_TTL_MS = 15000;
+const LIVE_STATUS_WARNING_COOLDOWN_MS = 300000;
 
 const liveStatusCache = new Map();
 const liveStatusInFlight = new Map();
+const liveStatusWarningAtByChannel = new Map();
 
 const LIVE_STATUS_QUERY = `
   query ChannelLiveCheck($login: String!) {
@@ -108,11 +110,7 @@ async function getChannelLiveState(channel) {
       });
       return state;
     } catch (error) {
-      console.warn(
-        "Stream Guard: live status unavailable.",
-        channel,
-        error
-      );
+      maybeWarnLiveStatusUnavailable(channel, error);
       liveStatusCache.set(channel, {
         state: {
           status: "unknown",
@@ -133,4 +131,24 @@ async function getChannelLiveState(channel) {
   } finally {
     liveStatusInFlight.delete(channel);
   }
+}
+
+function maybeWarnLiveStatusUnavailable(channel, error) {
+  const normalizedChannel = String(channel || "").toLowerCase();
+  if (!normalizedChannel) {
+    return;
+  }
+
+  const now = Date.now();
+  const lastWarningAt = Math.round(Number(liveStatusWarningAtByChannel.get(normalizedChannel) || 0));
+  if (lastWarningAt > 0 && now - lastWarningAt < LIVE_STATUS_WARNING_COOLDOWN_MS) {
+    return;
+  }
+
+  liveStatusWarningAtByChannel.set(normalizedChannel, now);
+  console.warn(
+    "Stream Guard: live status unavailable.",
+    normalizedChannel,
+    error
+  );
 }

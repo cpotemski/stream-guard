@@ -22,14 +22,11 @@ async function reportWatchUptime(options = {}) {
   lastReportedUptimeKey = dedupeKey;
 
   try {
-    const response = await chrome.runtime.sendMessage({
+    await chrome.runtime.sendMessage({
       type: "watch:uptime",
       channel,
       uptimeSeconds
     });
-    if (response?.ok && response.missingStreamId) {
-      maybeWarnMissingStreamId(channel);
-    }
   } catch (_error) {
     // Ignore transient extension reload gaps.
   }
@@ -93,20 +90,6 @@ async function tryAutoClaimBonus() {
     claimBlockedUntilAt = 0;
     delete claimButton.dataset[AUTO_CLAIM_MARKER];
   }
-}
-
-function maybeWarnMissingStreamId(channel) {
-  const now = Date.now();
-  if (now - lastMissingStreamIdWarningAt < 60000) {
-    return;
-  }
-
-  lastMissingStreamIdWarningAt = now;
-  console.warn(
-    TAB_LOG_PREFIX,
-    "no live stream id available for broadcast continuity",
-    { channel }
-  );
 }
 
 async function reportClaimAvailability(channel, available) {

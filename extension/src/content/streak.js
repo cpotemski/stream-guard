@@ -65,7 +65,6 @@ async function reportWatchStreak(options = {}) {
   let hadDialog = false;
   let hadPrimaryContainer = false;
   let hadIntroScreen = false;
-  let parserSource = "none";
   let primaryValue = null;
 
   try {
@@ -109,7 +108,6 @@ async function reportWatchStreak(options = {}) {
       : null;
     streakValue = parserResult?.value ?? null;
     hadPrimaryContainer = Boolean(parserResult?.hadPrimaryContainer);
-    parserSource = parserResult?.source || "none";
     primaryValue = parserResult?.primaryValue ?? null;
   } finally {
     const closed = await closeRewardCenterDialog();
@@ -120,11 +118,6 @@ async function reportWatchStreak(options = {}) {
   }
 
   if (!Number.isInteger(streakValue) || streakValue < 0) {
-    console.warn(
-      TAB_LOG_PREFIX,
-      "streak could not be found",
-      { channel, wasOpenBefore, hadDialog, hadPrimaryContainer }
-    );
     await sendStreakProbeLog(channel, "streak-no-valid-candidate", {
       hadPrimaryContainer,
       hadIntroScreen,
@@ -137,12 +130,6 @@ async function reportWatchStreak(options = {}) {
       hadIntroScreen
     });
     return;
-  }
-
-  if (parserSource === "primary") {
-    await sendStreakProbeLog(channel, "streak-primary-used", {
-      value: streakValue
-    });
   }
 
   const dedupeKey = `${channel}:${streakValue}`;
