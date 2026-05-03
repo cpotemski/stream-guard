@@ -8,6 +8,7 @@ export const DEFAULT_RUNTIME_STATE = {
   managedTabsByChannel: {},
   detachedUntilByChannel: {},
   liveStatusByChannel: {},
+  liveStreamMetaByChannel: {},
   watchSessionsByChannel: {},
   broadcastSessionsByChannel: {},
   lastBroadcastStatsByChannel: {},
@@ -65,6 +66,7 @@ export async function getRuntimeState() {
   const managedTabsByChannel = normalizeManagedTabsByChannel(stored.managedTabsByChannel);
   const detachedUntilByChannel = normalizeDetachedUntilByChannel(stored.detachedUntilByChannel);
   const liveStatusByChannel = normalizeLiveStatusByChannel(stored.liveStatusByChannel);
+  const liveStreamMetaByChannel = normalizeLiveStreamMetaByChannel(stored.liveStreamMetaByChannel);
   const watchSessionsByChannel = normalizeWatchSessionsByChannel(stored.watchSessionsByChannel);
   const broadcastSessionsByChannel = normalizeBroadcastSessionsByChannel(
     stored.broadcastSessionsByChannel
@@ -86,6 +88,7 @@ export async function getRuntimeState() {
     managedTabsByChannel,
     detachedUntilByChannel,
     liveStatusByChannel,
+    liveStreamMetaByChannel,
     watchSessionsByChannel,
     broadcastSessionsByChannel,
     lastBroadcastStatsByChannel,
@@ -114,6 +117,12 @@ export async function setRuntimeState(partialState) {
 
   if (partialState.liveStatusByChannel !== undefined) {
     next.liveStatusByChannel = normalizeLiveStatusByChannel(partialState.liveStatusByChannel);
+  }
+
+  if (partialState.liveStreamMetaByChannel !== undefined) {
+    next.liveStreamMetaByChannel = normalizeLiveStreamMetaByChannel(
+      partialState.liveStreamMetaByChannel
+    );
   }
 
   if (partialState.watchSessionsByChannel !== undefined) {
@@ -281,6 +290,30 @@ function normalizeWatchSession(value) {
   return { startedAt };
 }
 
+function normalizeLiveStreamMetaByChannel(value) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {});
+
+  return Object.fromEntries(
+    entries
+      .map(([channel, meta]) => [
+        String(channel || "").toLowerCase(),
+        normalizeLiveStreamMeta(meta)
+      ])
+      .filter(([channel, meta]) => channel && meta)
+  );
+}
+
+function normalizeLiveStreamMeta(value) {
+  const streamId = String(value?.streamId || "").trim();
+  if (!streamId) {
+    return null;
+  }
+
+  return {
+    streamId
+  };
+}
+
 function normalizeBroadcastSessionsByChannel(value) {
   const entries = Object.entries(value && typeof value === "object" ? value : {});
 
@@ -295,6 +328,7 @@ function normalizeBroadcastSessionsByChannel(value) {
 }
 
 function normalizeBroadcastSession(value) {
+  const streamId = String(value?.streamId || "").trim();
   const estimatedStartedAt = Math.round(Number(value?.estimatedStartedAt));
   const lastUptimeSeconds = Math.round(Number(value?.lastUptimeSeconds));
   const lastSeenAt = Math.round(Number(value?.lastSeenAt));
@@ -313,6 +347,7 @@ function normalizeBroadcastSession(value) {
   }
 
   return {
+    streamId: streamId || null,
     estimatedStartedAt,
     lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) && lastUptimeSeconds >= 0
       ? lastUptimeSeconds
@@ -349,6 +384,7 @@ function normalizeLastBroadcastStatsByChannel(value) {
 }
 
 function normalizeLastBroadcastStats(value) {
+  const streamId = String(value?.streamId || "").trim();
   const estimatedStartedAt = Math.round(Number(value?.estimatedStartedAt));
   if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
     return null;
@@ -367,6 +403,7 @@ function normalizeLastBroadcastStats(value) {
   const streakUnexpectedJumpForStream = Boolean(value?.streakUnexpectedJumpForStream);
 
   return {
+    streamId: streamId || null,
     estimatedStartedAt,
     lastSeenAt: Number.isFinite(lastSeenAt) && lastSeenAt > 0 ? lastSeenAt : 0,
     lastUptimeSeconds: Number.isFinite(lastUptimeSeconds) && lastUptimeSeconds >= 0

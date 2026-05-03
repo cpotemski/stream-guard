@@ -47,7 +47,11 @@ export function createMessageRouter({
           await reconcileManagedTabs(settings);
         }
         if (removedChannels.length > 0) {
-          await clearRuntimeStateForChannels(removedChannels, writeRuntimeState);
+          await clearRuntimeStateForChannels(
+            removedChannels,
+            readRuntimeStateCached,
+            writeRuntimeState
+          );
         }
         await updateBadge(settings);
         return { settings };
@@ -64,7 +68,11 @@ export function createMessageRouter({
           await reconcileManagedTabs(settings);
         }
         if (removedChannels.length > 0) {
-          await clearRuntimeStateForChannels(removedChannels, writeRuntimeState);
+          await clearRuntimeStateForChannels(
+            removedChannels,
+            readRuntimeStateCached,
+            writeRuntimeState
+          );
         }
         await updateBadge(settings);
         return { settings };
@@ -99,8 +107,7 @@ export function createMessageRouter({
         return { settings, closedTabs };
       }
       case "watch:uptime": {
-        await handleWatchUptime(message, sender);
-        return {};
+        return await handleWatchUptime(message, sender);
       }
       case "watch:authorize": {
         return {
@@ -268,7 +275,7 @@ function getRemovedChannels(previousChannels, nextChannels) {
   return [...previousNames].filter((channel) => !nextNames.has(channel));
 }
 
-async function clearRuntimeStateForChannels(channels, writeRuntimeState) {
+async function clearRuntimeStateForChannels(channels, readRuntimeStateCached, writeRuntimeState) {
   if (!Array.isArray(channels) || channels.length === 0) {
     return;
   }
@@ -278,6 +285,7 @@ async function clearRuntimeStateForChannels(channels, writeRuntimeState) {
     managedTabsByChannel: { ...currentState.managedTabsByChannel },
     detachedUntilByChannel: { ...currentState.detachedUntilByChannel },
     liveStatusByChannel: { ...currentState.liveStatusByChannel },
+    liveStreamMetaByChannel: { ...currentState.liveStreamMetaByChannel },
     watchSessionsByChannel: { ...currentState.watchSessionsByChannel },
     broadcastSessionsByChannel: { ...currentState.broadcastSessionsByChannel },
     lastBroadcastStatsByChannel: { ...currentState.lastBroadcastStatsByChannel },
@@ -292,6 +300,7 @@ async function clearRuntimeStateForChannels(channels, writeRuntimeState) {
     delete nextState.managedTabsByChannel[channel];
     delete nextState.detachedUntilByChannel[channel];
     delete nextState.liveStatusByChannel[channel];
+    delete nextState.liveStreamMetaByChannel[channel];
     delete nextState.watchSessionsByChannel[channel];
     delete nextState.broadcastSessionsByChannel[channel];
     delete nextState.lastBroadcastStatsByChannel[channel];

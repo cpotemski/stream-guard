@@ -5,6 +5,9 @@ export function createStreamSessionService({
   requestWatchStreakForManagedTab,
   logWorkerEvent
 }) {
+  const CLAIM_RECORD_BLOCK_WINDOW_MS = 120000;
+  const claimBlockedUntilByChannel = new Map();
+
   async function handleWatchUptime(message, sender) {
     const channel = String(message?.channel || "").toLowerCase();
     const tabId = sender?.tab?.id;
@@ -27,6 +30,9 @@ export function createStreamSessionService({
 
     const now = Date.now();
     const estimatedStartedAt = now - (uptimeSeconds * 1000);
+    const liveStreamId = String(
+      runtimeState.liveStreamMetaByChannel?.[channel]?.streamId || ""
+    ).trim();
     const currentBroadcast = runtimeState.broadcastSessionsByChannel[channel];
     const nextBroadcastSessionsByChannel = {
       ...runtimeState.broadcastSessionsByChannel
@@ -50,8 +56,19 @@ export function createStreamSessionService({
       ...runtimeState.lastBroadcastStatsByChannel
     };
 
+    let missingStreamId = false;
+    if (!liveStreamId) {
+      missingStreamId = true;
+      await logWorkerEvent("stream-id:missing", {
+        channel,
+        tabId,
+        uptimeSeconds
+      });
+    }
+
     if (!currentBroadcast) {
       const nextBroadcastSession = createBroadcastSession({
+        streamId: liveStreamId || null,
         estimatedStartedAt,
         uptimeSeconds,
         now
@@ -64,21 +81,22 @@ export function createStreamSessionService({
       });
       await logWorkerEvent("watch:uptime-init", {
         channel,
+        streamId: liveStreamId || null,
         uptimeSeconds,
         estimatedStartedAt
       });
       await requestWatchStreakForManagedTab(channel, managedTabId);
-      return;
+      return { missingStreamId };
     }
 
     const broadcastRestarted = hasBroadcastRestarted(
       currentBroadcast,
-      estimatedStartedAt,
-      uptimeSeconds
+      liveStreamId || null
     );
 
     nextBroadcastSessionsByChannel[channel] = {
       ...currentBroadcast,
+      streamId: currentBroadcast?.streamId || liveStreamId || null,
       estimatedStartedAt,
       lastUptimeSeconds: uptimeSeconds,
       lastSeenAt: now,
@@ -97,6 +115,7 @@ export function createStreamSessionService({
 
     if (broadcastRestarted) {
       nextBroadcastSessionsByChannel[channel] = createBroadcastSession({
+        streamId: liveStreamId || null,
         estimatedStartedAt,
         uptimeSeconds,
         now
@@ -115,6 +134,8 @@ export function createStreamSessionService({
       delete nextWatchStreakByChannel[channel];
       await logWorkerEvent("watch:session-reset", {
         channel,
+        previousStreamId: currentBroadcast?.streamId || null,
+        streamId: liveStreamId || null,
         previousBroadcast: currentBroadcast,
         uptimeSeconds,
         estimatedStartedAt
@@ -137,6 +158,8 @@ export function createStreamSessionService({
     if (broadcastRestarted) {
       await requestWatchStreakForManagedTab(channel, managedTabId);
     }
+
+    return { missingStreamId };
   }
 
   async function recordClaim(message, sender) {
@@ -161,6 +184,17 @@ export function createStreamSessionService({
       lastClaimAt: 0
     };
     const now = Date.now();
+    const blockedUntil = Math.round(Number(claimBlockedUntilByChannel.get(channel) || 0));
+
+    if (blockedUntil > now) {
+      await logWorkerEvent("claim:blocked-duplicate", {
+        channel,
+        blockedUntil
+      });
+      return;
+    }
+
+    claimBlockedUntilByChannel.set(channel, now + CLAIM_RECORD_BLOCK_WINDOW_MS);
 
     if (currentStats.lastClaimAt > 0 && now - currentStats.lastClaimAt < 10000) {
       return;
@@ -379,11 +413,13 @@ export function createStreamSessionService({
 }
 
 function createBroadcastSession({
+  streamId,
   estimatedStartedAt,
   uptimeSeconds,
   now
 }) {
   return {
+    streamId: String(streamId || "").trim() || null,
     estimatedStartedAt,
     lastUptimeSeconds: uptimeSeconds,
     lastSeenAt: now,
@@ -406,6 +442,7 @@ function createLastBroadcastStats(session) {
   }
 
   return {
+    streamId: String(session?.streamId || "").trim() || null,
     estimatedStartedAt,
     lastSeenAt: Math.round(Number(session?.lastSeenAt) || 0),
     lastUptimeSeconds: Math.max(0, Math.round(Number(session?.lastUptimeSeconds) || 0)),
@@ -434,21 +471,13 @@ function normalizeStreakValue(value) {
   return normalized;
 }
 
-function hasBroadcastRestarted(currentBroadcast, nextEstimatedStartedAt, nextUptimeSeconds) {
-  const previousEstimatedStartedAt = Number(currentBroadcast?.estimatedStartedAt);
-  const previousUptimeSeconds = Number(currentBroadcast?.lastUptimeSeconds);
+function hasBroadcastRestarted(currentBroadcast, nextStreamId) {
+  const previousStreamId = String(currentBroadcast?.streamId || "").trim();
+  const normalizedNextStreamId = String(nextStreamId || "").trim();
 
-  if (!Number.isFinite(previousEstimatedStartedAt) || previousEstimatedStartedAt <= 0) {
+  if (!previousStreamId || !normalizedNextStreamId) {
     return false;
   }
 
-  if (!Number.isFinite(previousUptimeSeconds) || previousUptimeSeconds < 0) {
-    return false;
-  }
-
-  if (nextUptimeSeconds + 30 < previousUptimeSeconds) {
-    return true;
-  }
-
-  return Math.abs(nextEstimatedStartedAt - previousEstimatedStartedAt) > 120000;
+  return previousStreamId !== normalizedNextStreamId;
 }

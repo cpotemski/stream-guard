@@ -1,4 +1,4 @@
-import { selectLiveChannels } from "../lib/liveStatus.js";
+import { getChannelsLiveState } from "../lib/liveStatus.js";
 import { closeManagedWatchTabs, openWatchTab, reconcileWatchGroup } from "../lib/tabManager.js";
 import { evaluateManagedTabPrimeBarrier } from "./tabPrimeState.js";
 
@@ -53,7 +53,25 @@ export function createTabLifecycleService({
     const now = Date.now();
     const runtimeState = await readRuntimeStateCached();
     const prioritizedChannels = settings.importantChannels.map((entry) => entry.name);
-    const liveChannels = await selectLiveChannels(prioritizedChannels, settings.maxStreams);
+    const liveStateByChannel = await getChannelsLiveState(prioritizedChannels);
+    const nextLiveStatusByChannel = Object.fromEntries(
+      Object.entries(liveStateByChannel).map(([channel, state]) => [channel, state.status])
+    );
+    const nextLiveStreamMetaByChannel = Object.fromEntries(
+      Object.entries(liveStateByChannel)
+        .filter(([, state]) => state?.status === "live" && state?.streamId)
+        .map(([channel, state]) => [channel, { streamId: state.streamId }])
+    );
+    const liveChannels = [];
+    for (const channel of prioritizedChannels) {
+      if (liveChannels.length >= Math.max(0, Number(settings.maxStreams) || 0)) {
+        break;
+      }
+
+      if (liveStateByChannel[channel]?.status === "live") {
+        liveChannels.push(channel);
+      }
+    }
     const desiredChannels = new Set(liveChannels);
     const nextManagedTabsByChannel = { ...runtimeState.managedTabsByChannel };
     const nextDetachedUntilByChannel = { ...runtimeState.detachedUntilByChannel };
@@ -259,6 +277,8 @@ export function createTabLifecycleService({
         await writeRuntimeState({
           managedTabsByChannel: nextManagedTabsByChannel,
           detachedUntilByChannel: nextDetachedUntilByChannel,
+          liveStatusByChannel: nextLiveStatusByChannel,
+          liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
           watchSessionsByChannel: nextWatchSessionsByChannel,
           broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
           lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
@@ -333,6 +353,8 @@ export function createTabLifecycleService({
     await writeRuntimeState({
       managedTabsByChannel: nextManagedTabsByChannel,
       detachedUntilByChannel: nextDetachedUntilByChannel,
+      liveStatusByChannel: nextLiveStatusByChannel,
+      liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
       lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
@@ -356,6 +378,8 @@ export function createTabLifecycleService({
     await logWorkerEvent("reconcile:done", summarizeRuntimeState({
       managedTabsByChannel: nextManagedTabsByChannel,
       detachedUntilByChannel: nextDetachedUntilByChannel,
+      liveStatusByChannel: nextLiveStatusByChannel,
+      liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
       lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
@@ -694,6 +718,7 @@ function markBroadcastEnded(nextLastBroadcastStatsByChannel, channel, broadcastS
   const existing = nextLastBroadcastStatsByChannel[channel];
   const normalizedEndedAt = Math.max(0, Math.round(Number(endedAt) || 0));
   nextLastBroadcastStatsByChannel[channel] = {
+    streamId: String(broadcastSession.streamId || "").trim() || null,
     estimatedStartedAt,
     lastSeenAt: Math.max(0, Math.round(Number(broadcastSession.lastSeenAt) || 0)),
     lastUptimeSeconds: Math.max(0, Math.round(Number(broadcastSession.lastUptimeSeconds) || 0)),

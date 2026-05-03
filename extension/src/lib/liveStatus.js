@@ -25,8 +25,8 @@ export async function selectLiveChannels(channels, maxStreams) {
     return [];
   }
 
-  const statuses = await Promise.all(
-    targetChannels.map((channel) => getChannelLiveStatus(channel))
+  const states = await Promise.all(
+    targetChannels.map((channel) => getChannelLiveState(channel))
   );
   const liveChannels = [];
   for (let index = 0; index < targetChannels.length; index += 1) {
@@ -34,7 +34,7 @@ export async function selectLiveChannels(channels, maxStreams) {
       break;
     }
 
-    if (statuses[index] === "live") {
+    if (states[index]?.status === "live") {
       liveChannels.push(targetChannels[index]);
     }
   }
@@ -43,23 +43,31 @@ export async function selectLiveChannels(channels, maxStreams) {
 }
 
 export async function getChannelsLiveStatus(channels) {
-  const targetChannels = [...new Set((Array.isArray(channels) ? channels : [])
-    .map((channel) => String(channel || "").toLowerCase())
-    .filter(Boolean))];
-  const statuses = await Promise.all(
-    targetChannels.map((channel) => getChannelLiveStatus(channel))
-  );
+  const statesByChannel = await getChannelsLiveState(channels);
 
   return Object.fromEntries(
-    targetChannels.map((channel, index) => [channel, statuses[index]])
+    Object.entries(statesByChannel).map(([channel, state]) => [channel, state.status])
   );
 }
 
-async function getChannelLiveStatus(channel) {
+export async function getChannelsLiveState(channels) {
+  const targetChannels = [...new Set((Array.isArray(channels) ? channels : [])
+    .map((channel) => String(channel || "").toLowerCase())
+    .filter(Boolean))];
+  const states = await Promise.all(
+    targetChannels.map((channel) => getChannelLiveState(channel))
+  );
+
+  return Object.fromEntries(
+    targetChannels.map((channel, index) => [channel, states[index]])
+  );
+}
+
+async function getChannelLiveState(channel) {
   const now = Date.now();
   const cached = liveStatusCache.get(channel);
   if (cached && cached.expiresAt > now) {
-    return cached.status;
+    return cached.state;
   }
 
   const inFlight = liveStatusInFlight.get(channel);
@@ -89,12 +97,16 @@ async function getChannelLiveStatus(channel) {
       }
 
       const payload = await response.json();
-      const status = payload?.data?.user?.stream?.id ? "live" : "offline";
+      const streamId = String(payload?.data?.user?.stream?.id || "").trim();
+      const state = {
+        status: streamId ? "live" : "offline",
+        streamId: streamId || null
+      };
       liveStatusCache.set(channel, {
-        status,
+        state,
         expiresAt: Date.now() + LIVE_STATUS_CACHE_TTL_MS
       });
-      return status;
+      return state;
     } catch (error) {
       console.warn(
         "Stream Guard: live status unavailable.",
@@ -102,10 +114,16 @@ async function getChannelLiveStatus(channel) {
         error
       );
       liveStatusCache.set(channel, {
-        status: "unknown",
+        state: {
+          status: "unknown",
+          streamId: null
+        },
         expiresAt: Date.now() + LIVE_STATUS_CACHE_TTL_MS
       });
-      return "unknown";
+      return {
+        status: "unknown",
+        streamId: null
+      };
     }
   })();
 

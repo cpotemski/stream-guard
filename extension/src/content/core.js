@@ -30,6 +30,7 @@ const PLAYBACK_REPORT_DEBOUNCE_MS = 350;
 const RESUME_GAP_THRESHOLD_MS = 180000;
 const UNMUTE_SHORTCUT_SETTLE_MS = 120;
 const NETWORK_ERROR_RELOAD_COOLDOWN_MS = 120000;
+const CLAIM_CLICK_BLOCK_WINDOW_MS = 120000;
 const NETWORK_ERROR_RELOAD_AT_KEY = "twWatchGuardLastNetworkErrorReloadAt";
 const INLINE_STATS_REFRESH_INTERVAL_MS = 5000;
 const PLAYBACK_STATE_EVENTS = [
@@ -61,6 +62,8 @@ let channelAutomationReadyAt = 0;
 let startupSequenceTimeoutId = 0;
 let inlineStatsRefreshInFlight = false;
 let lastInlineStatsKey = null;
+let claimBlockedUntilAt = 0;
+let lastMissingStreamIdWarningAt = 0;
 
 function getChannelFromLocation(pathname) {
   const cleanPath = String(pathname || "").replace(/^\/+|\/+$/g, "");

@@ -22,11 +22,14 @@ async function reportWatchUptime(options = {}) {
   lastReportedUptimeKey = dedupeKey;
 
   try {
-    await chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       type: "watch:uptime",
       channel,
       uptimeSeconds
     });
+    if (response?.ok && response.missingStreamId) {
+      maybeWarnMissingStreamId(channel);
+    }
   } catch (_error) {
     // Ignore transient extension reload gaps.
   }
@@ -44,6 +47,10 @@ async function tryAutoClaimBonus() {
 
   const claimButton = findClaimButton();
   await reportClaimAvailability(channel, Boolean(claimButton && !claimButton.disabled));
+
+  if (claimBlockedUntilAt > Date.now()) {
+    return;
+  }
 
   if (!claimButton || claimButton.disabled || claimButton.dataset[AUTO_CLAIM_MARKER] === "1") {
     return;
@@ -65,6 +72,7 @@ async function tryAutoClaimBonus() {
   }
 
   claimButton.dataset[AUTO_CLAIM_MARKER] = "1";
+  claimBlockedUntilAt = Date.now() + CLAIM_CLICK_BLOCK_WINDOW_MS;
 
   try {
     claimButton.click();
@@ -82,8 +90,23 @@ async function tryAutoClaimBonus() {
       channel,
       message: error instanceof Error ? error.message : String(error)
     });
+    claimBlockedUntilAt = 0;
     delete claimButton.dataset[AUTO_CLAIM_MARKER];
   }
+}
+
+function maybeWarnMissingStreamId(channel) {
+  const now = Date.now();
+  if (now - lastMissingStreamIdWarningAt < 60000) {
+    return;
+  }
+
+  lastMissingStreamIdWarningAt = now;
+  console.warn(
+    TAB_LOG_PREFIX,
+    "no live stream id available for broadcast continuity",
+    { channel }
+  );
 }
 
 async function reportClaimAvailability(channel, available) {

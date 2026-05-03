@@ -1,4 +1,4 @@
-import { getChannelsLiveStatus } from "../lib/liveStatus.js";
+import { getChannelsLiveState } from "../lib/liveStatus.js";
 
 export function createOrchestratorService({
   alarmName,
@@ -81,12 +81,21 @@ export function createOrchestratorService({
   }
 
   async function refreshLiveStatus(settings) {
-    const liveStatusByChannel = await getChannelsLiveStatus(
+    const liveStateByChannel = await getChannelsLiveState(
       settings.importantChannels.map((entry) => entry.name)
+    );
+    const liveStatusByChannel = Object.fromEntries(
+      Object.entries(liveStateByChannel).map(([channel, state]) => [channel, state.status])
+    );
+    const liveStreamMetaByChannel = Object.fromEntries(
+      Object.entries(liveStateByChannel)
+        .filter(([, state]) => state?.status === "live" && state?.streamId)
+        .map(([channel, state]) => [channel, { streamId: state.streamId }])
     );
 
     await writeRuntimeState({
-      liveStatusByChannel
+      liveStatusByChannel,
+      liveStreamMetaByChannel
     });
 
     return liveStatusByChannel;
