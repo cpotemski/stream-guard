@@ -107,6 +107,7 @@ async function ensureManagedPlaybackState(options = {}) {
     });
   }
 
+  await ensureLowestPlaybackQuality(channel, playerContext, video);
   await reportManagedPlaybackStateForVideo(channel, video);
 }
 
@@ -417,6 +418,211 @@ function getManagedPlaybackState(video) {
   }
 
   return "ok";
+}
+
+async function ensureLowestPlaybackQuality(channel, playerContext, video) {
+  if (!(video instanceof HTMLVideoElement)) {
+    return;
+  }
+
+  const before = readPlaybackQualitySnapshot(playerContext, video);
+  if (before.videoHeight > 0 && before.videoHeight <= PLAYBACK_QUALITY_TARGET_HEIGHT) {
+    return;
+  }
+
+  if (playbackQualitySyncInFlight) {
+    return;
+  }
+
+  const now = Date.now();
+  if (lastPlaybackQualitySyncAt > 0 && now - lastPlaybackQualitySyncAt < PLAYBACK_QUALITY_SYNC_COOLDOWN_MS) {
+    return;
+  }
+
+  playbackQualitySyncInFlight = true;
+  lastPlaybackQualitySyncAt = now;
+
+  try {
+    const result = await selectLowestPlaybackQualityOption(playerContext, video);
+    if (!result.attempted) {
+      return;
+    }
+
+    const after = readPlaybackQualitySnapshot(playerContext, video);
+    sendTabTelemetry("playback:quality-sync", {
+      channel,
+      beforeHeight: before.videoHeight,
+      afterHeight: after.videoHeight,
+      optionCount: after.optionCount,
+      checkedIndex: after.checkedIndex,
+      selectedLowest: after.checkedIndex >= 0 && after.checkedIndex === after.optionCount - 1,
+      status: result.status
+    });
+  } finally {
+    playbackQualitySyncInFlight = false;
+  }
+}
+
+async function selectLowestPlaybackQualityOption(playerContext, video) {
+  if (!(video instanceof HTMLVideoElement)) {
+    return { attempted: false, status: "missing-video" };
+  }
+
+  const qualityInputsBefore = findPlaybackQualityOptionInputs(playerContext.playerRoot);
+  if (qualityInputsBefore.length > 1) {
+    const selectedBefore = qualityInputsBefore.findIndex((input) => input.checked);
+    if (selectedBefore === qualityInputsBefore.length - 1) {
+      return { attempted: true, status: "already-selected" };
+    }
+  }
+
+  revealPlaybackControls(playerContext);
+  await wait(PLAYER_MENU_TOGGLE_DELAY_MS);
+
+  const settingsButton = findVisiblePlaybackSettingsButton(playerContext.playerRoot);
+  if (!(settingsButton instanceof HTMLButtonElement)) {
+    return { attempted: false, status: "missing-settings-button" };
+  }
+
+  if (qualityInputsBefore.length === 0) {
+    settingsButton.click();
+    await wait(PLAYER_MENU_TOGGLE_DELAY_MS);
+  }
+
+  let qualityInputs = findPlaybackQualityOptionInputs(playerContext.playerRoot);
+  if (qualityInputs.length === 0) {
+    const qualityMenuItem = findVisiblePlaybackQualityMenuItem(playerContext.playerRoot);
+    if (!(qualityMenuItem instanceof HTMLElement)) {
+      return { attempted: true, status: "missing-quality-menu-item" };
+    }
+
+    qualityMenuItem.click();
+    await wait(PLAYER_MENU_TOGGLE_DELAY_MS);
+    qualityInputs = findPlaybackQualityOptionInputs(playerContext.playerRoot);
+  }
+
+  if (qualityInputs.length < 2) {
+    return { attempted: true, status: "missing-quality-options" };
+  }
+
+  const lowestInput = qualityInputs[qualityInputs.length - 1];
+  if (!(lowestInput instanceof HTMLInputElement)) {
+    return { attempted: true, status: "missing-lowest-option" };
+  }
+
+  if (lowestInput.checked) {
+    return { attempted: true, status: "already-selected" };
+  }
+
+  const optionLayout = lowestInput.closest("[data-a-target='player-settings-submenu-quality-option']");
+  const optionRow = lowestInput.closest("[role='menuitemradio']");
+  const clickTarget = optionLayout instanceof HTMLElement
+    ? optionLayout
+    : optionRow instanceof HTMLElement ? optionRow : null;
+  if (!(clickTarget instanceof HTMLElement)) {
+    return { attempted: true, status: "missing-click-target" };
+  }
+
+  clickTarget.click();
+  await waitForPlaybackQualityTarget(video, lowestInput);
+  return { attempted: true, status: "selected" };
+}
+
+function readPlaybackQualitySnapshot(playerContext, video) {
+  const normalizedVideo = video instanceof HTMLVideoElement ? video : null;
+  const qualityInputs = findPlaybackQualityOptionInputs(playerContext?.playerRoot);
+  const checkedIndex = qualityInputs.findIndex((input) => input.checked);
+
+  return {
+    optionCount: qualityInputs.length,
+    checkedIndex,
+    videoHeight: normalizedVideo ? normalizePlaybackQualityDimension(normalizedVideo.videoHeight) : 0,
+    videoWidth: normalizedVideo ? normalizePlaybackQualityDimension(normalizedVideo.videoWidth) : 0
+  };
+}
+
+async function waitForPlaybackQualityTarget(video, selectedInput) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < PLAYBACK_QUALITY_SETTLE_TIMEOUT_MS) {
+    if (!(video instanceof HTMLVideoElement)) {
+      return;
+    }
+
+    if (selectedInput instanceof HTMLInputElement && selectedInput.checked) {
+      const height = normalizePlaybackQualityDimension(video.videoHeight);
+      if (height > 0 && height <= PLAYBACK_QUALITY_TARGET_HEIGHT) {
+        return;
+      }
+    }
+
+    await wait(PLAYBACK_QUALITY_SETTLE_POLL_MS);
+  }
+}
+
+function normalizePlaybackQualityDimension(value) {
+  const dimension = Math.floor(Number(value));
+  return Number.isInteger(dimension) && dimension > 0 ? dimension : 0;
+}
+
+function revealPlaybackControls(playerContext) {
+  const candidates = [
+    playerContext?.overlay,
+    playerContext?.playerRoot
+  ];
+
+  for (const candidate of candidates) {
+    if (!(candidate instanceof HTMLElement)) {
+      continue;
+    }
+
+    candidate.dispatchEvent(new MouseEvent("mouseenter", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    }));
+    candidate.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      view: window
+    }));
+  }
+}
+
+function findVisiblePlaybackSettingsButton(playerRoot) {
+  const scopedButton = playerRoot?.querySelector("[data-a-target='player-settings-button']");
+  if (scopedButton instanceof HTMLButtonElement && isVisibleInteractiveElement(scopedButton)) {
+    return scopedButton;
+  }
+
+  const buttons = [...document.querySelectorAll("[data-a-target='player-settings-button']")]
+    .filter((button) => button instanceof HTMLButtonElement)
+    .filter((button) => isVisibleInteractiveElement(button));
+  return buttons[0] || null;
+}
+
+function findVisiblePlaybackQualityMenuItem(playerRoot) {
+  const scopedItem = playerRoot?.querySelector("[data-a-target='player-settings-menu-item-quality']");
+  if (scopedItem instanceof HTMLElement && isVisibleInteractiveElement(scopedItem)) {
+    return scopedItem;
+  }
+
+  const items = [...document.querySelectorAll("[data-a-target='player-settings-menu-item-quality']")]
+    .filter((item) => item instanceof HTMLElement)
+    .filter((item) => isVisibleInteractiveElement(item));
+  return items[0] || null;
+}
+
+function findPlaybackQualityOptionInputs(playerRoot) {
+  const selectors = "[data-a-target='player-settings-submenu-quality-option'] input";
+  const scopedInputs = playerRoot instanceof HTMLElement
+    ? [...playerRoot.querySelectorAll(selectors)].filter((input) => input instanceof HTMLInputElement)
+    : [];
+  if (scopedInputs.length > 0) {
+    return scopedInputs;
+  }
+
+  return [...document.querySelectorAll(selectors)]
+    .filter((input) => input instanceof HTMLInputElement);
 }
 
 function attemptUnmuteWithShortcut(video) {

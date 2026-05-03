@@ -731,6 +731,8 @@ async function verifyPlaybackFlow(context, popupPage) {
   await managedPage.bringToFront();
 
   await waitForPlaybackHealthy(managedPage);
+  await waitForLowestPlaybackQuality(managedPage);
+  await assertLowestPlaybackQualitySelected(managedPage);
 
   const mutedAfterManualToggle = await manuallyMutePlayer(managedPage);
   assert.equal(mutedAfterManualToggle, true, "Manual player mute did not take effect.");
@@ -984,6 +986,51 @@ async function manuallyMutePlayer(page) {
       return video.muted ? true : null;
     });
   }, 10_000, 250, "Timed out trying to mute the Twitch player manually.");
+}
+
+async function waitForLowestPlaybackQuality(page) {
+  await expectEventually(async () => {
+    return page.evaluate(() => {
+      const video = document.querySelector("video");
+      if (!(video instanceof HTMLVideoElement)) {
+        return null;
+      }
+
+      return video.videoHeight === 160 ? true : null;
+    });
+  }, 20_000, 250, "Timed out waiting for Twitch playback to settle at 160p.");
+}
+
+async function assertLowestPlaybackQualitySelected(page) {
+  const settingsButtons = page.locator("[data-a-target='video-player'] [data-a-target='player-settings-button']");
+  const settingsButtonCount = await settingsButtons.count();
+  assert.equal(
+    settingsButtonCount,
+    2,
+    `Expected two player settings buttons, got ${settingsButtonCount}.`
+  );
+
+  await settingsButtons.nth(0).click();
+  await page.waitForTimeout(250);
+  await page.locator("[data-a-target='player-settings-menu-item-quality']").click();
+  await page.waitForTimeout(250);
+
+  const qualityInputs = page.locator("[data-a-target='player-settings-submenu-quality-option'] input");
+  const qualityInputCount = await qualityInputs.count();
+  assert.ok(qualityInputCount >= 2, `Expected multiple quality options, got ${qualityInputCount}.`);
+
+  const checkedIndex = await page.evaluate(() => {
+    const inputs = Array.from(
+      document.querySelectorAll("[data-a-target='player-settings-submenu-quality-option'] input")
+    );
+    return inputs.findIndex((input) => input instanceof HTMLInputElement && input.checked);
+  });
+
+  assert.equal(
+    checkedIndex,
+    qualityInputCount - 1,
+    `Expected the lowest quality option at index ${qualityInputCount - 1}, got ${checkedIndex}.`
+  );
 }
 
 async function tryReadTwitchStreak(channelPage) {
