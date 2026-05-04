@@ -75,6 +75,9 @@ export function createTabPrimeStateStore() {
 export function evaluateManagedTabPrimeBarrier({
   elapsedMs,
   primeState,
+  playbackState,
+  playbackStableForMs,
+  playbackStableWindowMs,
   streakValue,
   streakTimeoutMs
 }) {
@@ -82,16 +85,25 @@ export function evaluateManagedTabPrimeBarrier({
   const normalizedPrimeState = primeState && typeof primeState === "object"
     ? primeState
     : createDefaultPrimeState();
+  const normalizedPlaybackState = normalizePlaybackState(playbackState);
+  const normalizedPlaybackStableForMs = Math.max(0, Math.round(Number(playbackStableForMs) || 0));
+  const normalizedPlaybackStableWindowMs = Math.max(
+    0,
+    Math.round(Number(playbackStableWindowMs) || 0)
+  );
   const normalizedTimeoutMs = Math.max(0, Math.round(Number(streakTimeoutMs) || 0));
   const normalizedStreakValue = normalizeStreakValue(streakValue);
-  const hasPlaybackReady = Boolean(normalizedPrimeState.playbackReady);
+  const hasPlaybackReady = normalizedPlaybackState === "ok"
+    && normalizedPlaybackStableForMs >= normalizedPlaybackStableWindowMs;
+  const hasContentReady = Boolean(normalizedPrimeState.contentReady);
   const hasStreakValue = Number.isInteger(normalizedStreakValue);
   const timedOut = normalizedTimeoutMs > 0 && normalizedElapsedMs >= normalizedTimeoutMs;
 
-  if (hasPlaybackReady && hasStreakValue) {
+  if (hasContentReady && hasPlaybackReady && hasStreakValue) {
     return {
       done: true,
       reason: "ready",
+      hasContentReady,
       hasPlaybackReady,
       hasStreakValue,
       timedOut: false
@@ -102,6 +114,7 @@ export function evaluateManagedTabPrimeBarrier({
     return {
       done: true,
       reason: "timeout",
+      hasContentReady,
       hasPlaybackReady,
       hasStreakValue,
       timedOut: true
@@ -111,6 +124,7 @@ export function evaluateManagedTabPrimeBarrier({
   return {
     done: false,
     reason: "waiting",
+    hasContentReady,
     hasPlaybackReady,
     hasStreakValue,
     timedOut: false
@@ -136,4 +150,13 @@ function normalizeStreakValue(value) {
   }
 
   return normalized;
+}
+
+function normalizePlaybackState(value) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "ok" || normalized === "muted" || normalized === "paused") {
+    return normalized;
+  }
+
+  return null;
 }

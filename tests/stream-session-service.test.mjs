@@ -63,8 +63,7 @@ test("handleWatchUptime keeps the same broadcast state when the stream id matche
         streakUnexpectedJumpForStream: false,
         startupRecoveryReloadedAt: 0
       }
-    },
-    lastBroadcastStatsByChannel: {}
+    }
   };
 
   const service = createStreamSessionService({
@@ -165,8 +164,7 @@ test("handleWatchUptime resets the broadcast state when the stream id changes", 
         streakUnexpectedJumpForStream: false,
         startupRecoveryReloadedAt: 0
       }
-    },
-    lastBroadcastStatsByChannel: {}
+    }
   };
 
   const service = createStreamSessionService({
@@ -242,8 +240,7 @@ test("recordClaim blocks duplicate claim recordings for two minutes", async () =
         streakUnexpectedJumpForStream: false,
         startupRecoveryReloadedAt: 0
       }
-    },
-    lastBroadcastStatsByChannel: {}
+    }
   };
 
   const service = createStreamSessionService({
@@ -316,8 +313,7 @@ test("updateWatchStreak persists a reported 0 even when the channel previously h
         streakUnexpectedJumpForStream: false,
         startupRecoveryReloadedAt: 0
       }
-    },
-    lastBroadcastStatsByChannel: {}
+    }
   };
 
   const service = createStreamSessionService({

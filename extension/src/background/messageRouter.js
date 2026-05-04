@@ -288,7 +288,6 @@ async function clearRuntimeStateForChannels(channels, readRuntimeStateCached, wr
     liveStreamMetaByChannel: { ...currentState.liveStreamMetaByChannel },
     watchSessionsByChannel: { ...currentState.watchSessionsByChannel },
     broadcastSessionsByChannel: { ...currentState.broadcastSessionsByChannel },
-    lastBroadcastStatsByChannel: { ...currentState.lastBroadcastStatsByChannel },
     claimStatsByChannel: { ...currentState.claimStatsByChannel },
     claimAvailabilityByChannel: { ...currentState.claimAvailabilityByChannel },
     playbackStateByChannel: { ...currentState.playbackStateByChannel },
@@ -303,7 +302,6 @@ async function clearRuntimeStateForChannels(channels, readRuntimeStateCached, wr
     delete nextState.liveStreamMetaByChannel[channel];
     delete nextState.watchSessionsByChannel[channel];
     delete nextState.broadcastSessionsByChannel[channel];
-    delete nextState.lastBroadcastStatsByChannel[channel];
     delete nextState.claimStatsByChannel[channel];
     delete nextState.claimAvailabilityByChannel[channel];
     delete nextState.playbackStateByChannel[channel];

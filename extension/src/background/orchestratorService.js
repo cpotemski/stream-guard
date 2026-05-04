@@ -2,6 +2,7 @@ import { getChannelsLiveState } from "../lib/liveStatus.js";
 
 export function createOrchestratorService({
   alarmName,
+  rotationAlarmName,
   orchestratorLastTickAtKey,
   wakeGapThresholdMs,
   readSettingsFresh,
@@ -13,6 +14,7 @@ export function createOrchestratorService({
   readSettingsCached,
   reconcileManagedTabs,
   recoverManagedTabsAfterWake,
+  rotateManagedTabsIfNeeded,
   logWorkerEvent,
   reconcileWatchGroup
 }) {
@@ -41,6 +43,14 @@ export function createOrchestratorService({
   }
 
   async function onAlarm(alarm) {
+    if (alarm?.name === rotationAlarmName) {
+      const settings = await readSettingsCached();
+      if (settings.autoManage) {
+        await rotateManagedTabsIfNeeded();
+      }
+      return;
+    }
+
     if (alarm?.name !== alarmName) {
       return;
     }
@@ -60,9 +70,13 @@ export function createOrchestratorService({
 
   async function syncAlarm(enabled) {
     await chrome.alarms.clear(alarmName);
+    await chrome.alarms.clear(rotationAlarmName);
 
     if (enabled) {
       await chrome.alarms.create(alarmName, {
+        periodInMinutes: 1
+      });
+      await chrome.alarms.create(rotationAlarmName, {
         periodInMinutes: 1
       });
     }

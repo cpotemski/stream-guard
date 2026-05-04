@@ -5,6 +5,7 @@ import { evaluateManagedTabPrimeBarrier } from "./tabPrimeState.js";
 export function createTabLifecycleService({
   readRuntimeStateCached,
   readRuntimeStateFresh,
+  readSettingsCached,
   writeRuntimeState,
   getExistingTab,
   getChannelFromTab,
@@ -14,13 +15,17 @@ export function createTabLifecycleService({
   clearTabPrimeState,
   markPendingManagedTab,
   clearPendingManagedTab,
+  hasPendingManagedTabs,
   detachedReopenCooldownMs,
   startupRecoveryReloadThresholdMs
 }) {
   const managedTabPrimeTimeoutMs = 30000;
+  const managedTabPlaybackStableWindowMs = 2000;
   const managedTabActivationIntervalMs = 1000;
   const managedTabPlaybackRequestIntervalMs = 1000;
   const managedTabStreakRequestIntervalMs = 2500;
+  const managedTabRotationIntervalMs = 60000;
+  let lastManagedTabRotationAt = 0;
 
   async function rebindManagedTabsAfterUpdate(managedTabsByChannel) {
     const entries = Object.entries(managedTabsByChannel || {});
@@ -77,7 +82,6 @@ export function createTabLifecycleService({
     const nextDetachedUntilByChannel = { ...runtimeState.detachedUntilByChannel };
     const nextWatchSessionsByChannel = { ...runtimeState.watchSessionsByChannel };
     const nextBroadcastSessionsByChannel = { ...runtimeState.broadcastSessionsByChannel };
-    const nextLastBroadcastStatsByChannel = { ...runtimeState.lastBroadcastStatsByChannel };
     const nextClaimStatsByChannel = { ...runtimeState.claimStatsByChannel };
     const nextClaimAvailabilityByChannel = { ...runtimeState.claimAvailabilityByChannel };
     const nextPlaybackStateByChannel = { ...runtimeState.playbackStateByChannel };
@@ -87,6 +91,15 @@ export function createTabLifecycleService({
       prioritizedChannels,
       liveChannels,
       runtimeState: summarizeRuntimeState(runtimeState)
+    });
+
+    resetBroadcastStateForChangedLiveStreams({
+      liveStateByChannel,
+      nextBroadcastSessionsByChannel,
+      nextClaimStatsByChannel,
+      nextClaimAvailabilityByChannel,
+      nextWatchStreakByChannel,
+      logWorkerEvent
     });
 
     for (const [channel, tabId] of Object.entries(runtimeState.managedTabsByChannel)) {
@@ -100,12 +113,6 @@ export function createTabLifecycleService({
           keepBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
-        markBroadcastEnded(
-          nextLastBroadcastStatsByChannel,
-          channel,
-          nextBroadcastSessionsByChannel[channel],
-          now
-        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -129,12 +136,6 @@ export function createTabLifecycleService({
           tabId,
           keepBroadcastSession
         });
-        markBroadcastEnded(
-          nextLastBroadcastStatsByChannel,
-          channel,
-          nextBroadcastSessionsByChannel[channel],
-          now
-        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -172,12 +173,6 @@ export function createTabLifecycleService({
           keepBroadcastSession
         });
         await closeManagedWatchTabs([tabId]);
-        markBroadcastEnded(
-          nextLastBroadcastStatsByChannel,
-          channel,
-          nextBroadcastSessionsByChannel[channel],
-          now
-        );
         delete nextManagedTabsByChannel[channel];
         delete nextWatchSessionsByChannel[channel];
         delete nextClaimStatsByChannel[channel];
@@ -281,7 +276,6 @@ export function createTabLifecycleService({
           liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
           watchSessionsByChannel: nextWatchSessionsByChannel,
           broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-          lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
           claimStatsByChannel: nextClaimStatsByChannel,
           claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
           playbackStateByChannel: nextPlaybackStateByChannel,
@@ -357,7 +351,6 @@ export function createTabLifecycleService({
       liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       playbackStateByChannel: nextPlaybackStateByChannel,
@@ -382,7 +375,6 @@ export function createTabLifecycleService({
       liveStreamMetaByChannel: nextLiveStreamMetaByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       playbackStateByChannel: nextPlaybackStateByChannel,
@@ -477,6 +469,7 @@ export function createTabLifecycleService({
     let lastActivationAttemptAt = 0;
     let lastPlaybackRequestAt = 0;
     let lastStreakRequestAt = 0;
+    let playbackStableSince = 0;
     let contentReadyLogged = false;
     let streakAttemptLogged = false;
 
@@ -506,9 +499,23 @@ export function createTabLifecycleService({
         });
       }
 
+      const playbackState = runtimeState.playbackStateByChannel?.[channel] || null;
+      if (playbackState === "ok") {
+        playbackStableSince ||= now;
+      } else {
+        playbackStableSince = 0;
+      }
+
+      const playbackStableForMs = playbackStableSince > 0
+        ? Math.max(0, now - playbackStableSince)
+        : 0;
+
       const barrier = evaluateManagedTabPrimeBarrier({
         elapsedMs,
         primeState,
+        playbackState,
+        playbackStableForMs,
+        playbackStableWindowMs: managedTabPlaybackStableWindowMs,
         streakValue: runtimeState.watchStreakByChannel?.[channel]?.value,
         streakTimeoutMs: managedTabPrimeTimeoutMs
       });
@@ -540,6 +547,8 @@ export function createTabLifecycleService({
             elapsedMs,
             contentReady: primeState.contentReady,
             streakAttempted: primeState.streakAttempted,
+            playbackState,
+            playbackStableForMs,
             hasPlaybackReady: barrier.hasPlaybackReady,
             hasStreakValue: barrier.hasStreakValue,
             reason: barrier.reason
@@ -655,11 +664,57 @@ export function createTabLifecycleService({
     }
   }
 
+  async function rotateManagedTabsIfNeeded() {
+    if (typeof hasPendingManagedTabs === "function" && hasPendingManagedTabs()) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastManagedTabRotationAt < managedTabRotationIntervalMs) {
+      return;
+    }
+
+    const settings = await readSettingsCached();
+    const runtimeState = await readRuntimeStateFresh();
+    const prioritizedManagedTabs = getPrioritizedManagedTabs({
+      managedTabsByChannel: runtimeState.managedTabsByChannel,
+      prioritizedChannels: settings.importantChannels.map((entry) => entry.name)
+    });
+
+    if (prioritizedManagedTabs.length <= 1) {
+      lastManagedTabRotationAt = now;
+      return;
+    }
+
+    const target = await selectNextManagedTabForRotation({
+      prioritizedManagedTabs,
+      getExistingTab
+    });
+    if (!target) {
+      return;
+    }
+
+    try {
+      await chrome.tabs.update(target.tabId, { active: true });
+      lastManagedTabRotationAt = now;
+      await logWorkerEvent("watch:tab-rotated", {
+        channel: target.channel,
+        tabId: target.tabId
+      });
+    } catch (_error) {
+      await logWorkerEvent("watch:tab-rotate-failed", {
+        channel: target.channel,
+        tabId: target.tabId
+      });
+    }
+  }
+
   return {
     rebindManagedTabsAfterUpdate,
     reconcileManagedTabs,
     recoverManagedTabsAfterWake,
-    requestWatchStreakForManagedTab
+    requestWatchStreakForManagedTab,
+    rotateManagedTabsIfNeeded
   };
 }
 
@@ -705,42 +760,6 @@ function getStartupRecoveryReferenceAt(broadcastSession, watchSession) {
   return 0;
 }
 
-function markBroadcastEnded(nextLastBroadcastStatsByChannel, channel, broadcastSession, endedAt) {
-  if (!channel || !broadcastSession || typeof broadcastSession !== "object") {
-    return;
-  }
-
-  const estimatedStartedAt = Math.round(Number(broadcastSession.estimatedStartedAt));
-  if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
-    return;
-  }
-
-  const existing = nextLastBroadcastStatsByChannel[channel];
-  const normalizedEndedAt = Math.max(0, Math.round(Number(endedAt) || 0));
-  nextLastBroadcastStatsByChannel[channel] = {
-    streamId: String(broadcastSession.streamId || "").trim() || null,
-    estimatedStartedAt,
-    lastSeenAt: Math.max(0, Math.round(Number(broadcastSession.lastSeenAt) || 0)),
-    lastUptimeSeconds: Math.max(0, Math.round(Number(broadcastSession.lastUptimeSeconds) || 0)),
-    endedAt: normalizedEndedAt,
-    claimCount: Math.max(0, Math.floor(Number(broadcastSession.claimCount) || 0)),
-    lastClaimAt: Math.max(0, Math.round(Number(broadcastSession.lastClaimAt) || 0)),
-    streakValue: normalizeStreakValue(broadcastSession.streakValue),
-    streakSeenAt: Math.max(0, Math.round(Number(broadcastSession.streakSeenAt) || 0)),
-    baselineStreakValue: normalizeStreakValue(broadcastSession.baselineStreakValue),
-    baselineStreakSeenAt: Math.max(
-      0,
-      Math.round(Number(broadcastSession.baselineStreakSeenAt) || 0)
-    ),
-    streakIncreasedForStream: Boolean(
-      broadcastSession.streakIncreasedForStream || existing?.streakIncreasedForStream
-    ),
-    streakUnexpectedJumpForStream: Boolean(
-      broadcastSession.streakUnexpectedJumpForStream || existing?.streakUnexpectedJumpForStream
-    )
-  };
-}
-
 function normalizeStreakValue(value) {
   if (value === null || value === undefined) {
     return null;
@@ -762,7 +781,6 @@ function summarizeRuntimeState(runtimeState) {
     detachedChannels: Object.keys(state.detachedUntilByChannel || {}),
     watchSessionCount: Object.keys(state.watchSessionsByChannel || {}).length,
     broadcastSessionCount: Object.keys(state.broadcastSessionsByChannel || {}).length,
-    lastBroadcastStatsCount: Object.keys(state.lastBroadcastStatsByChannel || {}).length,
     claimStatsCount: Object.keys(state.claimStatsByChannel || {}).length,
     claimAvailabilityCount: Object.keys(state.claimAvailabilityByChannel || {}).length,
     playbackStates: state.playbackStateByChannel || {},
@@ -774,4 +792,107 @@ function wait(delayMs) {
   return new Promise((resolve) => {
     setTimeout(resolve, Math.max(0, Math.round(Number(delayMs) || 0)));
   });
+}
+
+function getPrioritizedManagedTabs({ managedTabsByChannel, prioritizedChannels }) {
+  const entriesByChannel = new Map(
+    Object.entries(managedTabsByChannel || {})
+      .filter(([, tabId]) => Number.isInteger(tabId))
+      .map(([channel, tabId]) => [channel, { channel, tabId }])
+  );
+  const ordered = [];
+
+  for (const channel of Array.isArray(prioritizedChannels) ? prioritizedChannels : []) {
+    const entry = entriesByChannel.get(channel);
+    if (!entry) {
+      continue;
+    }
+    ordered.push(entry);
+    entriesByChannel.delete(channel);
+  }
+
+  ordered.push(...entriesByChannel.values());
+  return ordered;
+}
+
+async function selectNextManagedTabForRotation({ prioritizedManagedTabs, getExistingTab }) {
+  const tabs = [];
+  for (const entry of prioritizedManagedTabs) {
+    const tab = await getExistingTab(entry.tabId);
+    if (!tab) {
+      continue;
+    }
+    tabs.push({
+      ...entry,
+      active: Boolean(tab.active)
+    });
+  }
+
+  if (tabs.length <= 1) {
+    return null;
+  }
+
+  const activeIndex = tabs.findIndex((entry) => entry.active);
+  if (activeIndex < 0) {
+    return tabs[0];
+  }
+
+  return tabs[(activeIndex + 1) % tabs.length];
+}
+
+export {
+  getPrioritizedManagedTabs,
+  selectNextManagedTabForRotation
+};
+
+function resetBroadcastStateForChangedLiveStreams({
+  liveStateByChannel,
+  nextBroadcastSessionsByChannel,
+  nextClaimStatsByChannel,
+  nextClaimAvailabilityByChannel,
+  nextWatchStreakByChannel,
+  logWorkerEvent
+}) {
+  for (const [channel, liveState] of Object.entries(liveStateByChannel || {})) {
+    const liveStreamId = String(liveState?.streamId || "").trim();
+    if (liveState?.status !== "live" || !liveStreamId) {
+      continue;
+    }
+
+    const currentBroadcast = nextBroadcastSessionsByChannel[channel];
+    const currentStreamId = String(currentBroadcast?.streamId || "").trim();
+    if (!currentBroadcast || !currentStreamId || currentStreamId === liveStreamId) {
+      continue;
+    }
+
+    nextBroadcastSessionsByChannel[channel] = {
+      streamId: liveStreamId,
+      estimatedStartedAt: 0,
+      lastUptimeSeconds: 0,
+      lastSeenAt: 0,
+      claimCount: 0,
+      lastClaimAt: 0,
+      streakValue: null,
+      streakSeenAt: 0,
+      baselineStreakValue: null,
+      baselineStreakSeenAt: 0,
+      streakIncreasedForStream: false,
+      streakUnexpectedJumpForStream: false,
+      startupRecoveryReloadedAt: 0
+    };
+    nextClaimStatsByChannel[channel] = {
+      count: 0,
+      lastClaimAt: 0
+    };
+    nextClaimAvailabilityByChannel[channel] = {
+      available: false,
+      seenAt: 0
+    };
+    delete nextWatchStreakByChannel[channel];
+    void logWorkerEvent("broadcast:reset-from-live-stream-meta", {
+      channel,
+      previousStreamId: currentStreamId,
+      streamId: liveStreamId
+    });
+  }
 }

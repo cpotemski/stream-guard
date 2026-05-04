@@ -223,7 +223,6 @@ async function readRuntimeStateSnapshot() {
     const stored = await chrome.storage.local.get([
       "managedTabsByChannel",
       "broadcastSessionsByChannel",
-      "lastBroadcastStatsByChannel",
       "claimStatsByChannel",
       "claimAvailabilityByChannel",
       "watchStreakByChannel",
@@ -298,8 +297,7 @@ function getInlineStatsRenderKey(channel, isImportant, runtimeState) {
   }
 
   const claimStats = runtimeState?.claimStatsByChannel?.[channel];
-  const broadcastStats = runtimeState?.broadcastSessionsByChannel?.[channel]
-    || runtimeState?.lastBroadcastStatsByChannel?.[channel];
+  const broadcastStats = runtimeState?.broadcastSessionsByChannel?.[channel];
   const streak = runtimeState?.watchStreakByChannel?.[channel]
     || runtimeState?.lastKnownWatchStreakByChannel?.[channel];
   const claimAvailability = runtimeState?.claimAvailabilityByChannel?.[channel];

@@ -52,9 +52,6 @@ export function createStreamSessionService({
     const nextLastKnownWatchStreakByChannel = {
       ...runtimeState.lastKnownWatchStreakByChannel
     };
-    const nextLastBroadcastStatsByChannel = {
-      ...runtimeState.lastBroadcastStatsByChannel
-    };
 
     let missingStreamId = false;
     if (!liveStreamId) {
@@ -74,10 +71,8 @@ export function createStreamSessionService({
         now
       });
       nextBroadcastSessionsByChannel[channel] = nextBroadcastSession;
-      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcastSession);
       await writeRuntimeState({
-        broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-        lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
+        broadcastSessionsByChannel: nextBroadcastSessionsByChannel
       });
       await logWorkerEvent("watch:uptime-init", {
         channel,
@@ -141,18 +136,13 @@ export function createStreamSessionService({
         estimatedStartedAt
       });
     }
-    nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(
-      nextBroadcastSessionsByChannel[channel]
-    );
-
     await writeRuntimeState({
       broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
       watchSessionsByChannel: nextWatchSessionsByChannel,
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
       watchStreakByChannel: nextWatchStreakByChannel,
-      lastKnownWatchStreakByChannel: nextLastKnownWatchStreakByChannel,
-      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
+      lastKnownWatchStreakByChannel: nextLastKnownWatchStreakByChannel
     });
 
     if (broadcastRestarted) {
@@ -217,9 +207,6 @@ export function createStreamSessionService({
     const nextBroadcastSessionsByChannel = {
       ...runtimeState.broadcastSessionsByChannel
     };
-    const nextLastBroadcastStatsByChannel = {
-      ...runtimeState.lastBroadcastStatsByChannel
-    };
     const currentBroadcast = runtimeState.broadcastSessionsByChannel?.[channel];
     if (currentBroadcast) {
       const nextBroadcast = {
@@ -228,14 +215,12 @@ export function createStreamSessionService({
         lastClaimAt: now
       };
       nextBroadcastSessionsByChannel[channel] = nextBroadcast;
-      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcast);
     }
 
     await writeRuntimeState({
       claimStatsByChannel: nextClaimStatsByChannel,
       claimAvailabilityByChannel: nextClaimAvailabilityByChannel,
-      broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
+      broadcastSessionsByChannel: nextBroadcastSessionsByChannel
     });
     await logWorkerEvent("claim:recorded", {
       channel,
@@ -372,10 +357,6 @@ export function createStreamSessionService({
     const nextBroadcastSessionsByChannel = {
       ...runtimeState.broadcastSessionsByChannel
     };
-    const nextLastBroadcastStatsByChannel = {
-      ...runtimeState.lastBroadcastStatsByChannel
-    };
-
     if (currentBroadcast) {
       const nextBroadcast = {
         ...currentBroadcast,
@@ -387,14 +368,12 @@ export function createStreamSessionService({
         streakUnexpectedJumpForStream: hasUnexpectedJumpForCurrentStream
       };
       nextBroadcastSessionsByChannel[channel] = nextBroadcast;
-      nextLastBroadcastStatsByChannel[channel] = createLastBroadcastStats(nextBroadcast);
     }
 
     await writeRuntimeState({
       watchStreakByChannel: nextWatchStreakByChannel,
       lastKnownWatchStreakByChannel: nextLastKnownWatchStreakByChannel,
-      broadcastSessionsByChannel: nextBroadcastSessionsByChannel,
-      lastBroadcastStatsByChannel: nextLastBroadcastStatsByChannel
+      broadcastSessionsByChannel: nextBroadcastSessionsByChannel
     });
     await logWorkerEvent("streak:updated", {
       channel,
@@ -432,29 +411,6 @@ function createBroadcastSession({
     streakIncreasedForStream: false,
     streakUnexpectedJumpForStream: false,
     startupRecoveryReloadedAt: 0
-  };
-}
-
-function createLastBroadcastStats(session) {
-  const estimatedStartedAt = Math.round(Number(session?.estimatedStartedAt));
-  if (!Number.isFinite(estimatedStartedAt) || estimatedStartedAt <= 0) {
-    return null;
-  }
-
-  return {
-    streamId: String(session?.streamId || "").trim() || null,
-    estimatedStartedAt,
-    lastSeenAt: Math.round(Number(session?.lastSeenAt) || 0),
-    lastUptimeSeconds: Math.max(0, Math.round(Number(session?.lastUptimeSeconds) || 0)),
-    endedAt: 0,
-    claimCount: Math.max(0, Math.floor(Number(session?.claimCount) || 0)),
-    lastClaimAt: Math.round(Number(session?.lastClaimAt) || 0),
-    streakValue: normalizeStreakValue(session?.streakValue),
-    streakSeenAt: Math.round(Number(session?.streakSeenAt) || 0),
-    baselineStreakValue: normalizeStreakValue(session?.baselineStreakValue),
-    baselineStreakSeenAt: Math.round(Number(session?.baselineStreakSeenAt) || 0),
-    streakIncreasedForStream: Boolean(session?.streakIncreasedForStream),
-    streakUnexpectedJumpForStream: Boolean(session?.streakUnexpectedJumpForStream)
   };
 }
 

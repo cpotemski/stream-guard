@@ -76,11 +76,6 @@
       return activeBroadcast;
     }
 
-    const lastBroadcast = runtimeState.lastBroadcastStatsByChannel?.[channel];
-    if (isValidBroadcastStats(lastBroadcast)) {
-      return lastBroadcast;
-    }
-
     return null;
   }
 

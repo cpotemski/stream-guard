@@ -24,7 +24,6 @@ const RUNTIME_STATE_KEYS = [
   "liveStatusByChannel",
   "watchSessionsByChannel",
   "broadcastSessionsByChannel",
-  "lastBroadcastStatsByChannel",
   "claimStatsByChannel",
   "claimAvailabilityByChannel",
   "playbackStateByChannel",

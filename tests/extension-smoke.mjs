@@ -292,7 +292,6 @@ async function resetExtensionState(extensionWorker) {
       liveStatusByChannel: {},
       watchSessionsByChannel: {},
       broadcastSessionsByChannel: {},
-      lastBroadcastStatsByChannel: {},
       claimStatsByChannel: {},
       claimAvailabilityByChannel: {},
       playbackStateByChannel: {},

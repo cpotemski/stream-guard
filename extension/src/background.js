@@ -21,6 +21,7 @@ import { createWorkerLogger } from "./background/workerLogger.js";
 import { createTelemetryStore } from "./background/telemetryStore.js";
 
 const ORCHESTRATOR_ALARM = "orchestrator-tick";
+const MANAGED_TAB_ROTATION_ALARM = "managed-tab-rotation";
 const ORCHESTRATOR_LAST_TICK_AT_KEY = "orchestratorLastTickAt";
 const WATCH_GROUP_TITLE = "Stream Guard";
 const STATE_CACHE_TTL_MS = 1500;
@@ -72,6 +73,7 @@ const tabPrimeStateStore = createTabPrimeStateStore();
 const tabLifecycleService = createTabLifecycleService({
   readRuntimeStateCached: runtimeStore.readRuntimeStateCached,
   readRuntimeStateFresh: runtimeStore.readRuntimeStateFresh,
+  readSettingsCached: runtimeStore.readSettingsCached,
   writeRuntimeState: runtimeStore.writeRuntimeState,
   getExistingTab,
   getChannelFromTab,
@@ -93,6 +95,7 @@ const tabLifecycleService = createTabLifecycleService({
       pendingManagedTabsByChannel.delete(channel);
     }
   },
+  hasPendingManagedTabs: () => pendingManagedTabsByChannel.size > 0,
   detachedReopenCooldownMs: DETACHED_REOPEN_COOLDOWN_MS,
   startupRecoveryReloadThresholdMs: STARTUP_RECOVERY_RELOAD_THRESHOLD_MS
 });
@@ -121,6 +124,7 @@ const streamSessionService = createStreamSessionService({
 
 const orchestratorService = createOrchestratorService({
   alarmName: ORCHESTRATOR_ALARM,
+  rotationAlarmName: MANAGED_TAB_ROTATION_ALARM,
   orchestratorLastTickAtKey: ORCHESTRATOR_LAST_TICK_AT_KEY,
   wakeGapThresholdMs: WAKE_GAP_THRESHOLD_MS,
   readSettingsFresh: runtimeStore.readSettingsFresh,
@@ -132,6 +136,7 @@ const orchestratorService = createOrchestratorService({
   readSettingsCached: runtimeStore.readSettingsCached,
   reconcileManagedTabs: tabLifecycleService.reconcileManagedTabs,
   recoverManagedTabsAfterWake: tabLifecycleService.recoverManagedTabsAfterWake,
+  rotateManagedTabsIfNeeded: tabLifecycleService.rotateManagedTabsIfNeeded,
   logWorkerEvent: workerLogger.logWorkerEvent,
   reconcileWatchGroup
 });
