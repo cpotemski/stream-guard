@@ -472,6 +472,7 @@ async function selectLowestPlaybackQualityOption(playerContext, video) {
   if (qualityInputsBefore.length > 1) {
     const selectedBefore = qualityInputsBefore.findIndex((input) => input.checked);
     if (selectedBefore === qualityInputsBefore.length - 1) {
+      await closePlaybackSettingsMenu(playerContext);
       return { attempted: true, status: "already-selected" };
     }
   }
@@ -511,6 +512,7 @@ async function selectLowestPlaybackQualityOption(playerContext, video) {
   }
 
   if (lowestInput.checked) {
+    await closePlaybackSettingsMenu(playerContext, settingsButton);
     return { attempted: true, status: "already-selected" };
   }
 
@@ -525,6 +527,7 @@ async function selectLowestPlaybackQualityOption(playerContext, video) {
 
   clickTarget.click();
   await waitForPlaybackQualityTarget(video, lowestInput);
+  await closePlaybackSettingsMenu(playerContext, settingsButton);
   return { attempted: true, status: "selected" };
 }
 
@@ -562,6 +565,40 @@ async function waitForPlaybackQualityTarget(video, selectedInput) {
 function normalizePlaybackQualityDimension(value) {
   const dimension = Math.floor(Number(value));
   return Number.isInteger(dimension) && dimension > 0 ? dimension : 0;
+}
+
+async function closePlaybackSettingsMenu(playerContext, settingsButton = null) {
+  if (!isPlaybackSettingsMenuOpen(playerContext?.playerRoot)) {
+    return true;
+  }
+
+  const closeButton = settingsButton instanceof HTMLButtonElement
+    ? settingsButton
+    : findVisiblePlaybackSettingsButton(playerContext?.playerRoot);
+  if (closeButton instanceof HTMLButtonElement) {
+    closeButton.click();
+    await wait(PLAYER_MENU_TOGGLE_DELAY_MS);
+  }
+
+  if (!isPlaybackSettingsMenuOpen(playerContext?.playerRoot)) {
+    return true;
+  }
+
+  const overlay = playerContext?.overlay;
+  if (overlay instanceof HTMLElement) {
+    overlay.click();
+    await wait(PLAYER_MENU_TOGGLE_DELAY_MS);
+  }
+
+  return !isPlaybackSettingsMenuOpen(playerContext?.playerRoot);
+}
+
+function isPlaybackSettingsMenuOpen(playerRoot) {
+  if (findPlaybackQualityOptionInputs(playerRoot).length > 0) {
+    return true;
+  }
+
+  return findVisiblePlaybackQualityMenuItem(playerRoot) instanceof HTMLElement;
 }
 
 function revealPlaybackControls(playerContext) {

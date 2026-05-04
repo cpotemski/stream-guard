@@ -1000,7 +1000,23 @@ async function waitForLowestPlaybackQuality(page) {
   }, 20_000, 250, "Timed out waiting for Twitch playback to settle at 160p.");
 }
 
+async function waitForPlaybackQualityMenuClosed(page) {
+  await expectEventually(async () => {
+    return page.evaluate(() => {
+      const hasQualityOptions = document.querySelector(
+        "[data-a-target='player-settings-submenu-quality-option'] input"
+      );
+      const hasQualityMenuItem = document.querySelector(
+        "[data-a-target='player-settings-menu-item-quality']"
+      );
+      return !hasQualityOptions && !hasQualityMenuItem ? true : null;
+    });
+  }, 5_000, 100, "Timed out waiting for the Twitch quality menu to close.");
+}
+
 async function assertLowestPlaybackQualitySelected(page) {
+  await waitForPlaybackQualityMenuClosed(page);
+
   const settingsButtons = page.locator("[data-a-target='video-player'] [data-a-target='player-settings-button']");
   const settingsButtonCount = await settingsButtons.count();
   assert.equal(
